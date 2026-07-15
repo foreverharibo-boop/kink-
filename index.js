@@ -108,7 +108,7 @@ function addKinkToCardInject(idx, kinkText) {
 
     let kinkCat = charStore.categories.find((c) => {
         const name = (c.name || "").trim().toLowerCase();
-        return name.includes("kink") || name.includes("sexuality");
+        return name.includes("kink") || name.includes("sexuality") || name.includes("sexual");
     });
     if (!kinkCat) {
         kinkCat = {
