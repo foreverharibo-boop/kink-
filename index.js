@@ -359,7 +359,8 @@ function escapeHtml(text) {
 
 function itemMatchesSearch(item, term) {
     if (!term) return true;
-    const haystack = `${item.kink} ${item.reason}`.toLowerCase();
+    const badge = SECTION_BADGES[item.section] || "";
+    const haystack = `${item.kink} ${item.reason} ${badge}`.toLowerCase();
     return haystack.includes(term.toLowerCase());
 }
 
