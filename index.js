@@ -258,11 +258,23 @@ function buildPopup() {
 function openPopup() {
     buildPopup();
     refreshPopupForCurrentCharacter();
+
+    // 마법봉(확장 메뉴) 드롭다운이 우리 팝업 위/아래로 겹치는 z-index 충돌 방지 - 열려있으면 숨김
+    const $wandMenu = $("#extensionsMenu");
+    if ($wandMenu.length && $wandMenu.is(":visible")) {
+        $wandMenu.data("kink-extractor-was-open", true).hide();
+    }
+
     $("#kink-extractor-overlay").addClass("open");
 }
 
 function closePopup() {
     $("#kink-extractor-overlay").removeClass("open");
+
+    const $wandMenu = $("#extensionsMenu");
+    if ($wandMenu.data("kink-extractor-was-open")) {
+        $wandMenu.removeData("kink-extractor-was-open").show();
+    }
 }
 
 function addWandButton() {

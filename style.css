@@ -1,18 +1,25 @@
 /* 마법봉 메뉴 팝업 오버레이 */
+/* 마법봉 메뉴 팝업 오버레이 - !important로 ST 전역 CSS 간섭 방지, 강제 중앙 고정 */
 .kink-extractor-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    z-index: 9999;
-    background: rgba(0, 0, 0, 0.55);
-    align-items: center;
-    justify-content: center;
-    padding: 16px;
-    box-sizing: border-box;
+    display: none !important;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    z-index: 999999 !important;
+    background-color: rgba(0, 0, 0, 0.6) !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 16px !important;
+    box-sizing: border-box !important;
 }
 
 .kink-extractor-overlay.open {
-    display: flex;
+    display: flex !important;
 }
 
 .kink-extractor-popup {
@@ -21,12 +28,16 @@
     max-height: 85vh;
     display: flex;
     flex-direction: column;
-    background: #1c1c22;
-    background: var(--SmartThemeChatTintColor, #1c1c22);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
+    /* var()가 비어있거나 무효할 경우를 대비해 고정 색을 먼저 깔고, 유효하면 테마 색으로 덮어씀 */
+    background-color: #1c1c22;
+    background-color: var(--SmartThemeChatTintColor);
+    border: 1px solid rgba(255,255,255,0.15);
+    border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.6);
     overflow: hidden;
+    position: relative;
+    z-index: 1000000 !important;
 }
 
 .kink-extractor-popup-header {
@@ -93,8 +104,10 @@
     overflow-y: auto;
     border-radius: 6px;
     padding: 10px;
-    background: var(--SmartThemeBlurTintColor);
+    background-color: rgba(255,255,255,0.05);
+    background-color: var(--SmartThemeBlurTintColor);
     color: var(--SmartThemeBodyColor);
+    border: 1px solid rgba(255,255,255,0.15);
     border: 1px solid var(--SmartThemeBorderColor);
     font-size: 13px;
     line-height: 1.6;
