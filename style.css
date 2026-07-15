@@ -76,6 +76,25 @@
     font-weight: 400;
 }
 
+.kink-extractor-settings-panel {
+    margin-top: 6px;
+}
+
+.kink-extractor-settings-panel .kink-extractor-label {
+    margin-top: 8px;
+}
+
+.kink-extractor-settings-panel select {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background-color: var(--SmartThemeBlurTintColor, #222);
+    color: var(--SmartThemeBodyColor, #eee);
+    font-size: 13px;
+    margin-top: 4px;
+}
+
 .kink-extractor-char-select-wrap {
     margin-bottom: 12px;
 }

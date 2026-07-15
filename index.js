@@ -17,7 +17,7 @@ const defaultSettings = {
     chatMessageCount: 0, // 분석에 반영할 최근 채팅 메시지 개수 (0 = 반영 안 함), 전역 설정
 };
 
-let extension_settings, getContext, generateRaw, saveSettingsDebounced;
+let extension_settings, getContext, generateRaw, saveSettingsDebounced, ConnectionManagerRequestService;
 let selectedCharIndex = null;
 let searchTerm = "";
 
@@ -39,6 +39,13 @@ async function loadModules() {
     } catch (e) {
         generateRaw = window.generateRaw;
         saveSettingsDebounced = window.saveSettingsDebounced;
+    }
+
+    // 연결 프로필별로 요청을 보내기 위한 서비스 - getContext()를 통해 가져오는 게 가장 안전함
+    try {
+        ConnectionManagerRequestService = getContext?.()?.ConnectionManagerRequestService ?? window.ConnectionManagerRequestService;
+    } catch (e) {
+        ConnectionManagerRequestService = window.ConnectionManagerRequestService;
     }
 
     if (!extension_settings || !getContext || !generateRaw) {
@@ -261,6 +268,27 @@ State everything as a fact the character already possesses — never phrase it a
 function chatBlock(chatText) {
     if (!chatText) return "";
     return `\n\n--- Recent Chat Log (most recent ${chatText.split("\n").length} messages) ---\n${chatText}\n--- End Chat Log ---`;
+}
+
+// 설정된 연결 프로필이 있으면 그걸로, 없으면 기본 generateRaw로 생성
+// ConnectionManagerRequestService를 쓰면 지금 활성화된 메인 프로필을 건드리지 않고 이 확장만 다른 프로필로 요청을 보낼 수 있음
+async function generateWithSelectedProfile(prompt) {
+    const settings = ensureSettings();
+    const profileId = settings.connectionProfileId;
+
+    if (!profileId || !ConnectionManagerRequestService) {
+        return generateRaw(prompt);
+    }
+
+    try {
+        const response = await ConnectionManagerRequestService.sendRequest(profileId, prompt, 1000);
+        // 응답 형태가 API마다 조금씩 달라서 흔한 필드들을 순서대로 확인
+        if (typeof response === "string") return response;
+        return response?.content ?? response?.text ?? response?.choices?.[0]?.message?.content ?? "";
+    } catch (e) {
+        console.error(`[${EXT_ID}] 선택된 연결 프로필로 요청 실패, 기본 연결로 재시도`, e);
+        return generateRaw(prompt);
+    }
 }
 
 function buildFullPrompt(sheet, chatText) {
@@ -835,6 +863,52 @@ function closePopup() {
     }
 }
 
+// 확장탭(#extensions_settings2)에 연결 프로필 선택용 작은 설정 패널을 별도로 추가
+// 여기서 고른 프로필은 이 확장의 모든 생성 요청(Analyze/추가 제안/리롤)에만 적용되고, ST의 메인 연결에는 영향 없음
+function populateProfileSelect() {
+    const $select = $("#kink-extractor-profile-select");
+    if (!$select.length) return;
+
+    const settings = ensureSettings();
+    const profiles = getContext?.()?.extensionSettings?.connectionManager?.profiles ?? [];
+
+    $select.empty();
+    $select.append(`<option value="">(Use ST's active connection)</option>`);
+    profiles.forEach((p) => {
+        $select.append(`<option value="${p.id}">${escapeHtml(p.name || p.id)}</option>`);
+    });
+
+    $select.val(settings.connectionProfileId || "");
+}
+
+function buildExtensionsTabPanel() {
+    if ($("#kink-extractor-settings-panel").length) return;
+
+    const html = `
+    <div id="kink-extractor-settings-panel" class="kink-extractor-settings-panel">
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>Kink Extractor</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div class="inline-drawer-content">
+                <label class="kink-extractor-label" for="kink-extractor-profile-select">Connection Profile</label>
+                <select id="kink-extractor-profile-select" class="kink-extractor-char-select"></select>
+                <div class="kink-extractor-chat-note">Only affects this extension's own requests (Analyze, suggestions, reroll) - your main chat connection is untouched.</div>
+            </div>
+        </div>
+    </div>`;
+
+    $("#extensions_settings2").append(html);
+    populateProfileSelect();
+
+    $("#kink-extractor-profile-select").on("change", function () {
+        const settings = ensureSettings();
+        settings.connectionProfileId = $(this).val() || null;
+        saveSettingsDebounced?.();
+    });
+}
+
 function addWandButton() {
     const buttonHtml = `
     <div id="kink-extractor-wand-button" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
@@ -859,4 +933,5 @@ jQuery(async () => {
 
     ensureSettings();
     addWandButton();
+    buildExtensionsTabPanel();
 });
