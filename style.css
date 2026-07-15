@@ -175,8 +175,14 @@
     cursor: not-allowed;
 }
 
-.kink-extractor-more-label {
+.kink-extractor-more-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-top: 4px;
+}
+
+.kink-extractor-more-label {
     font-size: 11px;
     color: #9a958c !important;
     text-transform: uppercase;
@@ -184,34 +190,57 @@
     font-weight: 600;
 }
 
-.kink-extractor-more-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+.kink-extractor-reset-link {
+    font-size: 11px;
+    color: #b3afa5 !important;
+    cursor: pointer;
+    user-select: none;
+}
+
+.kink-extractor-reset-link:hover {
+    color: #57544c !important;
+}
+
+.kink-extractor-more-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     margin: 6px 0 4px;
 }
 
-.kink-extractor-more-grid .menu_button {
+.kink-more-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
     background-color: #ffffff !important;
     border: 1px solid #ded9d0 !important;
     color: #2b2b2e !important;
-    padding: 8px 10px;
+    padding: 9px 12px;
     border-radius: 8px;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 600;
+    text-align: left;
     cursor: pointer;
+    line-height: 1.2;
 }
 
-.kink-extractor-more-grid .menu_button:hover {
+.kink-more-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.kink-more-btn:hover {
     filter: brightness(0.97);
 }
 
-.kink-extractor-more-grid .menu_button:disabled {
+.kink-more-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
 }
 
-#kink-extractor-more-all {
+.kink-more-btn-all {
     background-color: #f0eee9 !important;
     border-color: #ded9d0 !important;
 }
@@ -354,4 +383,21 @@
     font-size: 10.5px;
     color: #b3afa5 !important;
     text-align: center;
+}
+
+.kink-extractor-reset-btn {
+    width: 100%;
+    margin-top: 12px;
+    background-color: #ffffff !important;
+    border: 1px solid #ece2df !important;
+    color: #b3756c !important;
+    padding: 7px 10px;
+    border-radius: 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.kink-extractor-reset-btn:hover {
+    background-color: #fbf2f0 !important;
 }

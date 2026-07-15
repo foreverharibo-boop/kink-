@@ -721,12 +721,15 @@ function buildPopup() {
                     <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
                 </div>
 
-                <div class="kink-extractor-more-label">Add more suggestions</div>
-                <div class="kink-extractor-more-grid">
-                    <button id="kink-extractor-more-explicit" class="menu_button" data-section="explicit">📄 Sheet</button>
-                    <button id="kink-extractor-more-inferred" class="menu_button" data-section="inferred">🤖 AI</button>
-                    <button id="kink-extractor-more-chat" class="menu_button" data-section="chat">💬 Chat</button>
-                    <button id="kink-extractor-more-all" class="menu_button">🔀 All</button>
+                <div class="kink-extractor-more-header">
+                    <span class="kink-extractor-more-label">Add more suggestions</span>
+                    <span id="kink-extractor-reset" class="kink-extractor-reset-link">🗑 Reset all</span>
+                </div>
+                <div class="kink-extractor-more-list">
+                    <button id="kink-extractor-more-explicit" class="kink-more-btn" data-section="explicit"><span class="kink-more-icon">📄</span> Sheet suggestions</button>
+                    <button id="kink-extractor-more-inferred" class="kink-more-btn" data-section="inferred"><span class="kink-more-icon">🤖</span> AI suggestions</button>
+                    <button id="kink-extractor-more-chat" class="kink-more-btn" data-section="chat"><span class="kink-more-icon">💬</span> Chat suggestions</button>
+                    <button id="kink-extractor-more-all" class="kink-more-btn kink-more-btn-all"><span class="kink-more-icon">🔀</span> All suggestions</button>
                 </div>
 
                 <div class="kink-extractor-result-header">
@@ -735,6 +738,9 @@ function buildPopup() {
                 </div>
 
                 <div id="kink-extractor-result" class="kink-extractor-result"></div>
+
+                <button id="kink-extractor-reset" class="kink-extractor-reset-btn">🗑 Reset all results for this character</button>
+
                 <div class="kink-extractor-footnote">Saved automatically per character on this device's server settings.</div>
             </div>
         </div>
@@ -776,7 +782,31 @@ function buildPopup() {
         runSectionOnlyAnalysis(SECTION_CHAT, $(this));
     });
     $("#kink-extractor-more-all").on("click", () => runFullAnalysis("more"));
+
+    $("#kink-extractor-reset").on("click", function () {
+        if (selectedCharIndex === null) return;
+        const entry = getEntryByIndex(selectedCharIndex);
+        if (!entry || !entry.items.length) return;
+        if (!confirm("Clear all results for this character? This can't be undone.")) return;
+        entry.items = [];
+        saveSettingsDebounced?.();
+        renderResult(entry.items);
+    });
     $("#kink-extractor-copy").on("click", copyResultToClipboard);
+
+    $("#kink-extractor-reset").on("click", function () {
+        if (selectedCharIndex === null) return;
+        const entry = getEntryByIndex(selectedCharIndex);
+        if (!entry || !entry.items.length) return;
+
+        if (!confirm("Delete all analyzed results for this character? This can't be undone.")) return;
+
+        entry.items = [];
+        saveSettingsDebounced?.();
+        searchTerm = "";
+        $("#kink-extractor-search").val("");
+        renderResult(entry.items);
+    });
 
     $("#kink-extractor-search").on("input", function () {
         searchTerm = $(this).val();
