@@ -71,7 +71,7 @@ function getEntryByIndex(idx) {
     const key = getCharacterKeyByIndex(idx);
     if (!key) return null;
     if (!settings.perCharacter[key]) {
-        settings.perCharacter[key] = { isAdultConfirmed: false, items: [], savedKinks: [] };
+        settings.perCharacter[key] = { isAdultConfirmed: false, items: [] };
     }
     const entry = settings.perCharacter[key];
 
@@ -82,7 +82,6 @@ function getEntryByIndex(idx) {
         saveSettingsDebounced?.();
     }
     if (!entry.items) entry.items = [];
-    if (!entry.savedKinks) entry.savedKinks = [];
 
     return entry;
 }
@@ -255,7 +254,7 @@ function renderResult(items) {
                 <p class="prose-line"><span class="field-label">Reason:</span> ${escapeHtml(it.reason)}</p>
                 <div class="kink-item-actions">
                     <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁 Reroll</button>
-                    <button class="kink-save-btn" data-idx="${it.idx}" title="Save just the Kink line">💾 Save</button>
+                    <button class="kink-copy-btn" data-idx="${it.idx}" title="Copy just the Kink line">📋 Copy Kink</button>
                 </div>
             </div>`;
         }
@@ -273,35 +272,9 @@ function renderResult(items) {
         rerollItem(idx);
     });
 
-    $out.find(".kink-save-btn").on("click", function () {
+    $out.find(".kink-copy-btn").on("click", function () {
         const idx = Number($(this).data("idx"));
-        saveKinkOnly(idx);
-    });
-}
-
-function renderSavedList(savedKinks) {
-    const $out = $("#kink-extractor-saved-list");
-    if (!$out.length) return;
-
-    if (!savedKinks || !savedKinks.length) {
-        $out.html('<div class="kink-extractor-placeholder">No saved kinks yet.</div>');
-        return;
-    }
-
-    let html = "";
-    savedKinks.forEach((text, idx) => {
-        html += `
-        <div class="saved-kink-chip">
-            <span class="saved-kink-text">${escapeHtml(text)}</span>
-            <span class="saved-kink-remove" data-idx="${idx}" title="Remove">✕</span>
-        </div>`;
-    });
-
-    $out.html(html);
-
-    $out.find(".saved-kink-remove").on("click", function () {
-        const idx = Number($(this).data("idx"));
-        removeSavedKink(idx);
+        copyKinkOnly(idx, $(this));
     });
 }
 
@@ -380,30 +353,29 @@ async function rerollItem(idx) {
     }
 }
 
-function saveKinkOnly(idx) {
+function copyKinkOnly(idx, $btn) {
     if (selectedCharIndex === null) return;
     const entry = getEntryByIndex(selectedCharIndex);
     if (!entry || !entry.items[idx]) return;
 
-    const kinkText = entry.items[idx].kink;
-    if (entry.savedKinks.includes(kinkText)) {
-        toastr?.info?.("Already saved.") ?? null;
-        return;
+    const text = entry.items[idx].kink;
+    const originalText = $btn.text();
+
+    const onSuccess = () => {
+        $btn.text("Copied!");
+        setTimeout(() => $btn.text(originalText), 1200);
+    };
+    const onFail = () => {
+        toastr?.error?.("Copy failed - please copy manually.") ?? alert("Copy failed - please copy manually.");
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onSuccess).catch(() => {
+            legacyCopy(text) ? onSuccess() : onFail();
+        });
+    } else {
+        legacyCopy(text) ? onSuccess() : onFail();
     }
-
-    entry.savedKinks.push(kinkText);
-    saveSettingsDebounced?.();
-    renderSavedList(entry.savedKinks);
-}
-
-function removeSavedKink(idx) {
-    if (selectedCharIndex === null) return;
-    const entry = getEntryByIndex(selectedCharIndex);
-    if (!entry || !entry.savedKinks) return;
-
-    entry.savedKinks.splice(idx, 1);
-    saveSettingsDebounced?.();
-    renderSavedList(entry.savedKinks);
 }
 
 function copyResultToClipboard() {
@@ -473,13 +445,11 @@ function refreshPopupForSelectedCharacter() {
     if (selectedCharIndex === null) {
         $("#kink-extractor-adult-confirm").prop("checked", false);
         renderResult([]);
-        renderSavedList([]);
         return;
     }
     const entry = getEntryByIndex(selectedCharIndex);
     $("#kink-extractor-adult-confirm").prop("checked", !!entry?.isAdultConfirmed);
     renderResult(entry?.items || []);
-    renderSavedList(entry?.savedKinks || []);
 }
 
 function buildPopup() {
@@ -513,10 +483,6 @@ function buildPopup() {
                 </div>
 
                 <div id="kink-extractor-result" class="kink-extractor-result"></div>
-
-                <div class="kink-extractor-saved-header">Saved Kinks</div>
-                <div id="kink-extractor-saved-list" class="kink-extractor-saved-list"></div>
-
                 <div class="kink-extractor-footnote">Saved automatically per character on this device's server settings.</div>
             </div>
         </div>
