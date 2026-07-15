@@ -363,6 +363,12 @@ function itemMatchesSearch(item, term) {
     return haystack.includes(term.toLowerCase());
 }
 
+const SECTION_BADGES = {
+    [SECTION_EXPLICIT]: "📄 Sheet",
+    [SECTION_CHAT]: "💬 Chat",
+    [SECTION_INFERRED]: "🤖 AI",
+};
+
 function renderResult(items) {
     const $out = $("#kink-extractor-result");
 
@@ -388,6 +394,7 @@ function renderResult(items) {
         for (const it of visibleGroup) {
             html += `
             <div class="kink-item" data-idx="${it.idx}">
+                <span class="kink-source-badge kink-source-${sectionKey}">${escapeHtml(SECTION_BADGES[sectionKey])}</span>
                 <p class="prose-line"><span class="field-label">Kink:</span> ${escapeHtml(it.kink)}</p>
                 <p class="prose-line"><span class="field-label">Reason:</span> ${escapeHtml(it.reason)}</p>
                 <div class="kink-item-actions">
@@ -739,8 +746,6 @@ function buildPopup() {
 
                 <div id="kink-extractor-result" class="kink-extractor-result"></div>
 
-                <button id="kink-extractor-reset" class="kink-extractor-reset-btn">🗑 Reset all results for this character</button>
-
                 <div class="kink-extractor-footnote">Saved automatically per character on this device's server settings.</div>
             </div>
         </div>
@@ -793,20 +798,6 @@ function buildPopup() {
         renderResult(entry.items);
     });
     $("#kink-extractor-copy").on("click", copyResultToClipboard);
-
-    $("#kink-extractor-reset").on("click", function () {
-        if (selectedCharIndex === null) return;
-        const entry = getEntryByIndex(selectedCharIndex);
-        if (!entry || !entry.items.length) return;
-
-        if (!confirm("Delete all analyzed results for this character? This can't be undone.")) return;
-
-        entry.items = [];
-        saveSettingsDebounced?.();
-        searchTerm = "";
-        $("#kink-extractor-search").val("");
-        renderResult(entry.items);
-    });
 
     $("#kink-extractor-search").on("input", function () {
         searchTerm = $(this).val();
