@@ -894,7 +894,6 @@ function buildExtensionsTabPanel() {
             <div class="inline-drawer-content">
                 <label class="kink-extractor-label" for="kink-extractor-profile-select">Connection Profile</label>
                 <select id="kink-extractor-profile-select" class="kink-extractor-char-select"></select>
-                <div class="kink-extractor-chat-note">Only affects this extension's own requests (Analyze, suggestions, reroll) - your main chat connection is untouched.</div>
             </div>
         </div>
     </div>`;
