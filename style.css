@@ -115,6 +115,27 @@
     margin: 10px 0 4px;
 }
 
+.kink-extractor-chat-count-wrap {
+    margin: 12px 0 4px;
+}
+
+.kink-extractor-chat-count {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #e3e0da;
+    background-color: #faf9f7 !important;
+    color: #2b2b2e !important;
+    font-size: 13.5px;
+}
+
+.kink-extractor-chat-note {
+    margin-top: 5px;
+    font-size: 11px;
+    color: #b3afa5 !important;
+    line-height: 1.4;
+}
+
 .checkbox_label input[type="checkbox"] {
     accent-color: #6b6862;
     width: 16px;

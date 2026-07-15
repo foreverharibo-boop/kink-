@@ -3,14 +3,18 @@
 const EXT_ID = "kink-extractor";
 
 const SECTION_EXPLICIT = "explicit";
+const SECTION_CHAT = "chat";
 const SECTION_INFERRED = "inferred";
 const SECTION_TITLES = {
     [SECTION_EXPLICIT]: "From Character Sheet (Explicit)",
+    [SECTION_CHAT]: "From Recent Chat (Observed)",
     [SECTION_INFERRED]: "AI-Inferred (Expanded)",
 };
+const SECTION_ORDER = [SECTION_EXPLICIT, SECTION_CHAT, SECTION_INFERRED];
 
 const defaultSettings = {
     perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, items: [{section, kink, reason}] }
+    chatMessageCount: 0, // 분석에 반영할 최근 채팅 메시지 개수 (0 = 반영 안 함), 전역 설정
 };
 
 let extension_settings, getContext, generateRaw, saveSettingsDebounced;
@@ -50,6 +54,9 @@ function ensureSettings() {
     }
     if (!extension_settings[EXT_ID].perCharacter) {
         extension_settings[EXT_ID].perCharacter = {};
+    }
+    if (typeof extension_settings[EXT_ID].chatMessageCount !== "number") {
+        extension_settings[EXT_ID].chatMessageCount = 0;
     }
     return extension_settings[EXT_ID];
 }
@@ -100,6 +107,27 @@ function getSheetByIndex(idx) {
     };
 }
 
+// 최근 채팅 로그는 "현재 실제로 열려있는 채팅"에서만 읽을 수 있음 (드롭다운으로 다른 캐릭터를 봐도 그 캐릭터의 채팅 로그엔 접근 불가)
+function isSelectedCharacterActiveChat(idx) {
+    const context = getContext();
+    return context.characterId !== undefined && Number(context.characterId) === Number(idx);
+}
+
+function getRecentChatText(idx, count) {
+    if (!count || count <= 0) return null;
+    if (!isSelectedCharacterActiveChat(idx)) return null;
+
+    const context = getContext();
+    const chat = context.chat || [];
+    const recent = chat.slice(-count);
+
+    if (!recent.length) return null;
+
+    return recent
+        .map((m) => `${m.name}: ${(m.mes || "").replace(/\s+/g, " ").trim()}`)
+        .join("\n");
+}
+
 // ---------- 파싱/직렬화 ----------
 
 // AI 응답 텍스트(섹션 헤더 + Kink/Reason 쌍)를 items 배열로 파싱
@@ -114,7 +142,13 @@ function parseItemsFromText(text) {
 
         if (line.startsWith("##")) {
             const headerText = line.replace(/^##\s*/, "").toLowerCase();
-            currentSection = headerText.includes("infer") ? SECTION_INFERRED : SECTION_EXPLICIT;
+            if (headerText.includes("chat")) {
+                currentSection = SECTION_CHAT;
+            } else if (headerText.includes("infer")) {
+                currentSection = SECTION_INFERRED;
+            } else {
+                currentSection = SECTION_EXPLICIT;
+            }
             continue;
         }
 
@@ -136,7 +170,7 @@ function parseItemsFromText(text) {
 // items 배열을 다시 AI 프롬프트/복사용 텍스트로 직렬화
 function serializeItems(items) {
     let out = "";
-    for (const sectionKey of [SECTION_EXPLICIT, SECTION_INFERRED]) {
+    for (const sectionKey of SECTION_ORDER) {
         const group = items.filter((it) => it.section === sectionKey);
         if (!group.length) continue;
         out += `## ${SECTION_TITLES[sectionKey]}\n`;
@@ -164,9 +198,21 @@ function commonInstructions(charName) {
 State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").`;
 }
 
-function buildFullPrompt(sheet) {
+function chatBlock(chatText) {
+    if (!chatText) return "";
+    return `\n\n--- Recent Chat Log (most recent ${chatText.split("\n").length} messages) ---\n${chatText}\n--- End Chat Log ---`;
+}
+
+function buildFullPrompt(sheet, chatText) {
     const charName = sheet.name || "this character";
-    return `${commonInstructions(charName)}
+    const chatSection = chatText
+        ? `\n\n## From Recent Chat (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} demonstrates in the recent chat log]\nReason: [a natural sentence pointing to what happened in the chat log that shows this]\n\nKink: ...\nReason: ...\n`
+        : "";
+    const chatNote = chatText
+        ? ` You are also given a recent chat log below — use it as a third source: identify kinks actually demonstrated in that dialogue, separate from what's merely stated in the character sheet.`
+        : "";
+
+    return `${commonInstructions(charName)}${chatNote}
 
 Respond ONLY in English, in the exact plain-text format below. Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences.
 
@@ -176,30 +222,30 @@ Reason: [a natural sentence explaining which part of the sheet supports this]
 
 Kink: ...
 Reason: ...
-
+${chatSection}
 ## AI-Inferred (Expanded)
 Kink: [a natural sentence stating a kink/preference ${charName} has]
 Reason: [a natural sentence explaining why it fits the character's established traits]
 
 Write 3 to 6 entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
 
-${sheetBlock(sheet)}`;
+${sheetBlock(sheet)}${chatBlock(chatText)}`;
 }
 
-function buildMorePrompt(sheet, existingItems) {
-    const charName = sheet.name || "this character";
+function buildMorePrompt(sheet, existingItems, chatText) {
     const existingText = serializeItems(existingItems);
-    return `${buildFullPrompt(sheet)}
+    return `${buildFullPrompt(sheet, chatText)}
 
 You already produced the following entries earlier. This time, produce new entries that do not overlap with them:
 
 ${existingText}`;
 }
 
-function buildSingleRerollPrompt(sheet, section, existingItems) {
+function buildSingleRerollPrompt(sheet, section, existingItems, chatText) {
     const charName = sheet.name || "this character";
     const existingText = serializeItems(existingItems);
     const sectionLabel = SECTION_TITLES[section];
+    const relevantChatBlock = section === SECTION_CHAT ? chatBlock(chatText) : "";
     return `${commonInstructions(charName)}
 
 Produce exactly ONE new entry for the category "${sectionLabel}" that is different from all entries listed below. Respond ONLY in English with exactly these two lines and nothing else:
@@ -210,7 +256,7 @@ Reason: [a natural sentence explaining the basis for it]
 Existing entries to avoid duplicating:
 ${existingText}
 
-${sheetBlock(sheet)}`;
+${sheetBlock(sheet)}${relevantChatBlock}`;
 }
 
 // ---------- 렌더링 ----------
@@ -236,7 +282,7 @@ function renderResult(items) {
     let html = "";
     let anyVisible = false;
 
-    for (const sectionKey of [SECTION_EXPLICIT, SECTION_INFERRED]) {
+    for (const sectionKey of SECTION_ORDER) {
         const group = items
             .map((it, idx) => ({ ...it, idx }))
             .filter((it) => it.section === sectionKey);
@@ -297,14 +343,17 @@ async function runFullAnalysis(mode) {
     const sheet = getSheetByIndex(selectedCharIndex);
     if (!sheet) return;
 
+    const settings = ensureSettings();
+    const chatText = getRecentChatText(selectedCharIndex, settings.chatMessageCount);
+
     const $btn = mode === "more" ? $("#kink-extractor-more") : $("#kink-extractor-analyze");
     const originalText = $btn.text();
     $btn.prop("disabled", true).text("Working...");
 
     try {
         const prompt = mode === "more" && entry.items.length
-            ? buildMorePrompt(sheet, entry.items)
-            : buildFullPrompt(sheet);
+            ? buildMorePrompt(sheet, entry.items, chatText)
+            : buildFullPrompt(sheet, chatText);
 
         const result = await generateRaw(prompt);
         const newItems = parseItemsFromText(result);
@@ -328,13 +377,16 @@ async function rerollItem(idx) {
     const sheet = getSheetByIndex(selectedCharIndex);
     if (!sheet) return;
 
+    const settings = ensureSettings();
+    const chatText = getRecentChatText(selectedCharIndex, settings.chatMessageCount);
+
     const $item = $(`.kink-item[data-idx="${idx}"]`);
     const $btn = $item.find(".kink-reroll-btn");
     $btn.prop("disabled", true).text("Rerolling...");
 
     try {
         const originalSection = entry.items[idx].section;
-        const prompt = buildSingleRerollPrompt(sheet, originalSection, entry.items);
+        const prompt = buildSingleRerollPrompt(sheet, originalSection, entry.items, chatText);
         const result = await generateRaw(prompt);
         const parsed = parseItemsFromText(result);
 
@@ -438,9 +490,27 @@ function populateCharacterSelect() {
     $select.val(selectedCharIndex);
 }
 
+function updateChatNote() {
+    const settings = ensureSettings();
+    const $note = $("#kink-extractor-chat-note");
+    if (!settings.chatMessageCount || settings.chatMessageCount <= 0) {
+        $note.text("");
+        return;
+    }
+    if (selectedCharIndex !== null && isSelectedCharacterActiveChat(selectedCharIndex)) {
+        $note.text(`Will include the last ${settings.chatMessageCount} messages from the currently open chat.`);
+    } else {
+        $note.text("This character's chat isn't currently open, so chat messages can't be included right now.");
+    }
+}
+
 function refreshPopupForSelectedCharacter() {
     searchTerm = "";
     $("#kink-extractor-search").val("");
+
+    const settings = ensureSettings();
+    $("#kink-extractor-chat-count").val(settings.chatMessageCount);
+    updateChatNote();
 
     if (selectedCharIndex === null) {
         $("#kink-extractor-adult-confirm").prop("checked", false);
@@ -472,6 +542,13 @@ function buildPopup() {
                     <input id="kink-extractor-adult-confirm" type="checkbox">
                     <span>This character is an adult (18+)</span>
                 </label>
+
+                <div class="kink-extractor-chat-count-wrap">
+                    <label class="kink-extractor-label" for="kink-extractor-chat-count">Recent chat messages to include</label>
+                    <input id="kink-extractor-chat-count" class="kink-extractor-chat-count" type="number" min="0" max="50" step="1">
+                    <div id="kink-extractor-chat-note" class="kink-extractor-chat-note"></div>
+                </div>
+
                 <div class="kink-extractor-buttons">
                     <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
                     <button id="kink-extractor-more" class="menu_button">More suggestions</button>
@@ -502,6 +579,14 @@ function buildPopup() {
         if (!entry) return;
         entry.isAdultConfirmed = $(this).is(":checked");
         saveSettingsDebounced?.();
+    });
+
+    $("#kink-extractor-chat-count").on("change input", function () {
+        const settings = ensureSettings();
+        const val = Math.max(0, Math.min(50, Number($(this).val()) || 0));
+        settings.chatMessageCount = val;
+        saveSettingsDebounced?.();
+        updateChatNote();
     });
 
     $("#kink-extractor-analyze").on("click", () => runFullAnalysis("analyze"));
