@@ -44,17 +44,24 @@ function ensureSettings() {
     return extension_settings[EXT_ID];
 }
 
-// 캐릭터별로 결과/체크박스를 분리 저장하기 위한 고유 키
-function getCharacterKey() {
+// 드롭다운에서 선택된 캐릭터 인덱스 (팝업 세션 동안만 유지)
+let selectedCharIndex = null;
+
+function getAllCharacters() {
     const context = getContext();
-    const char = context.characters?.[context.characterId];
-    if (!char) return null;
-    return char.avatar || char.name || String(context.characterId);
+    return context.characters || [];
 }
 
-function getCharEntry() {
+function getCharacterKeyByIndex(idx) {
+    const chars = getAllCharacters();
+    const char = chars[idx];
+    if (!char) return null;
+    return char.avatar || char.name || String(idx);
+}
+
+function getEntryByIndex(idx) {
     const settings = ensureSettings();
-    const key = getCharacterKey();
+    const key = getCharacterKeyByIndex(idx);
     if (!key) return null;
     if (!settings.perCharacter[key]) {
         settings.perCharacter[key] = { isAdultConfirmed: false, lastResult: "" };
@@ -62,9 +69,9 @@ function getCharEntry() {
     return settings.perCharacter[key];
 }
 
-function getCurrentCharSheet() {
-    const context = getContext();
-    const char = context.characters?.[context.characterId];
+function getSheetByIndex(idx) {
+    const chars = getAllCharacters();
+    const char = chars[idx];
     if (!char) return null;
 
     return {
@@ -162,7 +169,12 @@ function renderResult(text) {
 }
 
 async function runAnalysis(mode) {
-    const entry = getCharEntry();
+    if (selectedCharIndex === null) {
+        toastr?.warning?.("No character selected.") ?? alert("No character selected.");
+        return;
+    }
+
+    const entry = getEntryByIndex(selectedCharIndex);
     if (!entry) {
         toastr?.warning?.("No character selected.") ?? alert("No character selected.");
         return;
@@ -173,7 +185,7 @@ async function runAnalysis(mode) {
         return;
     }
 
-    const sheet = getCurrentCharSheet();
+    const sheet = getSheetByIndex(selectedCharIndex);
     if (!sheet) {
         toastr?.warning?.("No character selected.") ?? alert("No character selected.");
         return;
@@ -201,12 +213,29 @@ async function runAnalysis(mode) {
     }
 }
 
-function refreshPopupForCurrentCharacter() {
-    const entry = getCharEntry();
+function populateCharacterSelect() {
     const context = getContext();
-    const char = context.characters?.[context.characterId];
+    const chars = getAllCharacters();
+    const $select = $("#kink-extractor-char-select");
+    $select.empty();
 
-    $("#kink-extractor-char-name").text(char?.name || "No character selected");
+    chars.forEach((char, idx) => {
+        $select.append(`<option value="${idx}">${escapeHtml(char.name || "(unnamed)")}</option>`);
+    });
+
+    // 현재 채팅에 열려있는 캐릭터를 기본 선택값으로
+    const defaultIdx = context.characterId !== undefined && chars[context.characterId] ? context.characterId : 0;
+    selectedCharIndex = chars.length ? defaultIdx : null;
+    $select.val(selectedCharIndex);
+}
+
+function refreshPopupForSelectedCharacter() {
+    if (selectedCharIndex === null) {
+        $("#kink-extractor-adult-confirm").prop("checked", false);
+        renderResult("");
+        return;
+    }
+    const entry = getEntryByIndex(selectedCharIndex);
     $("#kink-extractor-adult-confirm").prop("checked", !!entry?.isAdultConfirmed);
     renderResult(entry?.lastResult || "");
 }
@@ -218,20 +247,25 @@ function buildPopup() {
     <div id="kink-extractor-overlay" class="kink-extractor-overlay">
         <div id="kink-extractor-popup" class="kink-extractor-popup">
             <div class="kink-extractor-popup-header">
-                <b>Kink Extractor</b>
+                <span class="kink-extractor-title">Kink Extractor</span>
                 <span id="kink-extractor-close" class="kink-extractor-close">✕</span>
             </div>
             <div class="kink-extractor-popup-body">
-                <div id="kink-extractor-char-name" class="kink-extractor-char-name"></div>
+                <div class="kink-extractor-char-select-wrap">
+                    <label class="kink-extractor-label">Character</label>
+                    <select id="kink-extractor-char-select" class="kink-extractor-char-select"></select>
+                </div>
+
                 <label class="checkbox_label" for="kink-extractor-adult-confirm">
                     <input id="kink-extractor-adult-confirm" type="checkbox">
                     <span>This character is an adult (18+)</span>
                 </label>
                 <div class="kink-extractor-buttons">
-                    <button id="kink-extractor-analyze" class="menu_button">Analyze</button>
+                    <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
                     <button id="kink-extractor-more" class="menu_button">More suggestions</button>
                 </div>
                 <div id="kink-extractor-result" class="kink-extractor-result"></div>
+                <div class="kink-extractor-footnote">Saved automatically per character on this device's server settings.</div>
             </div>
         </div>
     </div>`;
@@ -239,8 +273,14 @@ function buildPopup() {
     // MovingUI의 body transform 때문에 position:fixed가 깨지는 문제 회피 -> documentElement에 부착
     $(document.documentElement).append(html);
 
+    $("#kink-extractor-char-select").on("change", function () {
+        selectedCharIndex = Number($(this).val());
+        refreshPopupForSelectedCharacter();
+    });
+
     $("#kink-extractor-adult-confirm").on("change", function () {
-        const entry = getCharEntry();
+        if (selectedCharIndex === null) return;
+        const entry = getEntryByIndex(selectedCharIndex);
         if (!entry) return;
         entry.isAdultConfirmed = $(this).is(":checked");
         saveSettingsDebounced?.();
@@ -257,7 +297,8 @@ function buildPopup() {
 
 function openPopup() {
     buildPopup();
-    refreshPopupForCurrentCharacter();
+    populateCharacterSelect();
+    refreshPopupForSelectedCharacter();
 
     // 마법봉(확장 메뉴) 드롭다운이 우리 팝업 위/아래로 겹치는 z-index 충돌 방지 - 열려있으면 숨김
     const $wandMenu = $("#extensionsMenu");
