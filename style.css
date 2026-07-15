@@ -175,6 +175,47 @@
     cursor: not-allowed;
 }
 
+.kink-extractor-more-label {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #9a958c !important;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+}
+
+.kink-extractor-more-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 6px 0 4px;
+}
+
+.kink-extractor-more-grid .menu_button {
+    background-color: #ffffff !important;
+    border: 1px solid #ded9d0 !important;
+    color: #2b2b2e !important;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.kink-extractor-more-grid .menu_button:hover {
+    filter: brightness(0.97);
+}
+
+.kink-extractor-more-grid .menu_button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+#kink-extractor-more-all {
+    background-color: #f0eee9 !important;
+    border-color: #ded9d0 !important;
+}
+
 .kink-extractor-result-header {
     display: flex;
     gap: 8px;
@@ -214,12 +255,14 @@
 
 .kink-item-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     margin-top: 6px;
 }
 
 .kink-reroll-btn,
-.kink-copy-btn {
+.kink-copy-btn,
+.kink-inject-btn {
     margin-top: 0;
     background-color: #ffffff !important;
     border: 1px solid #e3e0da !important;
@@ -231,12 +274,14 @@
 }
 
 .kink-reroll-btn:hover,
-.kink-copy-btn:hover {
+.kink-copy-btn:hover,
+.kink-inject-btn:hover {
     background-color: #f0eee9 !important;
 }
 
 .kink-reroll-btn:disabled,
-.kink-copy-btn:disabled {
+.kink-copy-btn:disabled,
+.kink-inject-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }

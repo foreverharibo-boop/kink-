@@ -73,6 +73,66 @@ function getCharacterKeyByIndex(idx) {
     return char.avatar || char.name || String(idx);
 }
 
+// ---------- CardInject 연동 ----------
+// CardInject(foreverharibo-boop/cardinject)의 extension_settings 구조에 직접 써서
+// "Kink" 카테고리에 항목을 추가함. 캐릭터 키 포맷을 CardInject 쪽과 반드시 맞춰야 함(idx_ 접두사).
+const CARDINJECT_KEY = "cardinject";
+
+function getCardInjectCharKey(idx) {
+    const chars = getAllCharacters();
+    const char = chars[idx];
+    if (!char) return null;
+    return char.avatar || char.name || `idx_${idx}`;
+}
+
+function ensureCardInjectCharStore(idx) {
+    if (!extension_settings[CARDINJECT_KEY]) {
+        extension_settings[CARDINJECT_KEY] = { perChar: {}, selectedCharIdx: null, lastCharId: null, activeKeys: [] };
+    }
+    const store = extension_settings[CARDINJECT_KEY];
+    if (!store.perChar) store.perChar = {};
+
+    const key = getCardInjectCharKey(idx);
+    if (!key) return null;
+
+    if (!store.perChar[key]) store.perChar[key] = { categories: [] };
+    if (!Array.isArray(store.perChar[key].categories)) store.perChar[key].categories = [];
+    return store.perChar[key];
+}
+
+// kinkText 한 줄을 CardInject의 "Sexuality & Kink" 카테고리에 추가 (없으면 새로 만듦, 중복 줄은 건너뜀)
+// 이미 있는 카테고리 이름에 kink 또는 sexuality가 들어가 있으면 그걸 그대로 사용 (예: "Sexuality & Kink" 같은 기존 카테고리)
+function addKinkToCardInject(idx, kinkText) {
+    const charStore = ensureCardInjectCharStore(idx);
+    if (!charStore) return "no-character";
+
+    let kinkCat = charStore.categories.find((c) => {
+        const name = (c.name || "").trim().toLowerCase();
+        return name.includes("kink") || name.includes("sexuality");
+    });
+    if (!kinkCat) {
+        kinkCat = {
+            key: Math.random().toString(36).slice(2),
+            name: "Sexuality & Kink",
+            content: "",
+            importance: "medium",
+            position: "sys_top",
+            customDepth: 0,
+            enabled: true,
+            expanded: false,
+        };
+        charStore.categories.push(kinkCat);
+    }
+
+    const existingLines = (kinkCat.content || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    const trimmed = kinkText.trim();
+    if (existingLines.includes(trimmed)) return "duplicate";
+
+    kinkCat.content = [...existingLines, trimmed].join("\n");
+    saveSettingsDebounced?.();
+    return "added";
+}
+
 function getEntryByIndex(idx) {
     const settings = ensureSettings();
     const key = getCharacterKeyByIndex(idx);
@@ -259,7 +319,39 @@ ${existingText}
 ${sheetBlock(sheet)}${relevantChatBlock}`;
 }
 
-// ---------- 렌더링 ----------
+// 특정 카테고리 하나만 콕 집어서 추가 항목 생성 (다른 카테고리는 건드리지 않음)
+function buildSectionOnlyPrompt(sheet, section, existingItems, chatText) {
+    const charName = sheet.name || "this character";
+    const existingText = serializeItems(existingItems);
+
+    let instructionBody = "";
+    let extraBlock = "";
+
+    if (section === SECTION_EXPLICIT) {
+        instructionBody = `Identify kink/preference entries that are explicitly stated or clearly implied by the character sheet text itself.`;
+    } else if (section === SECTION_INFERRED) {
+        instructionBody = `Infer plausible kink/preference entries that are not directly stated in the sheet, but fit naturally with the character's established personality, scenario, and traits.`;
+    } else if (section === SECTION_CHAT) {
+        instructionBody = `You are given a recent chat log below — identify kinks ${charName} actually demonstrates in that dialogue, separate from what's merely stated in the character sheet.`;
+        extraBlock = chatBlock(chatText);
+    }
+
+    return `${commonInstructions(charName)} ${instructionBody}
+
+Respond ONLY in English, in the exact plain-text format below.
+
+## ${SECTION_TITLES[section]}
+Kink: [a natural sentence stating the kink/preference ${charName} has]
+Reason: [a natural sentence explaining the basis for it]
+
+Kink: ...
+Reason: ...
+
+Write 3 to 6 entries. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks. Do not repeat any of these existing entries:
+${existingText}
+
+${sheetBlock(sheet)}${extraBlock}`;
+}
 
 function escapeHtml(text) {
     return $("<div>").text(text).html();
@@ -301,6 +393,7 @@ function renderResult(items) {
                 <div class="kink-item-actions">
                     <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁 Reroll</button>
                     <button class="kink-copy-btn" data-idx="${it.idx}" title="Copy just the Kink line">📋 Copy Kink</button>
+                    <button class="kink-inject-btn" data-idx="${it.idx}" title="Add to CardInject's Kink category">➕ To CardInject</button>
                 </div>
             </div>`;
         }
@@ -321,6 +414,11 @@ function renderResult(items) {
     $out.find(".kink-copy-btn").on("click", function () {
         const idx = Number($(this).data("idx"));
         copyKinkOnly(idx, $(this));
+    });
+
+    $out.find(".kink-inject-btn").on("click", function () {
+        const idx = Number($(this).data("idx"));
+        injectKinkToCardInject(idx, $(this));
     });
 }
 
@@ -369,6 +467,50 @@ async function runFullAnalysis(mode) {
     }
 }
 
+async function runSectionOnlyAnalysis(section, $btn) {
+    if (selectedCharIndex === null) {
+        toastr?.warning?.("No character selected.") ?? alert("No character selected.");
+        return;
+    }
+
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry) return;
+
+    if (!entry.isAdultConfirmed) {
+        toastr?.warning?.("Please check 'This character is an adult' first.") ?? alert("Please check 'This character is an adult' first.");
+        return;
+    }
+
+    const settings = ensureSettings();
+    const chatText = getRecentChatText(selectedCharIndex, settings.chatMessageCount);
+
+    if (section === SECTION_CHAT && !chatText) {
+        toastr?.warning?.("No chat log available - set a message count and make sure this character's chat is currently open.") ?? alert("No chat log available.");
+        return;
+    }
+
+    const sheet = getSheetByIndex(selectedCharIndex);
+    if (!sheet) return;
+
+    const originalText = $btn.text();
+    $btn.prop("disabled", true).text("Working...");
+
+    try {
+        const prompt = buildSectionOnlyPrompt(sheet, section, entry.items, chatText);
+        const result = await generateRaw(prompt);
+        const newItems = parseItemsFromText(result).map((it) => ({ ...it, section }));
+
+        entry.items = [...entry.items, ...newItems];
+        saveSettingsDebounced?.();
+        renderResult(entry.items);
+    } catch (e) {
+        console.error(`[${EXT_ID}] ${section} 기반 분석 실패`, e);
+        toastr?.error?.("An error occurred. Check the console.") ?? alert("An error occurred.");
+    } finally {
+        $btn.prop("disabled", false).text(originalText);
+    }
+}
+
 async function rerollItem(idx) {
     if (selectedCharIndex === null) return;
     const entry = getEntryByIndex(selectedCharIndex);
@@ -403,6 +545,25 @@ async function rerollItem(idx) {
         toastr?.error?.("Reroll failed. Check the console.") ?? alert("Reroll failed.");
         $btn.prop("disabled", false).text("🔁 Reroll");
     }
+}
+
+function injectKinkToCardInject(idx, $btn) {
+    if (selectedCharIndex === null) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry || !entry.items[idx]) return;
+
+    const originalText = $btn.text();
+    const result = addKinkToCardInject(selectedCharIndex, entry.items[idx].kink);
+
+    if (result === "added") {
+        $btn.text("Added!");
+    } else if (result === "duplicate") {
+        $btn.text("Already there");
+    } else {
+        $btn.text("Failed");
+        toastr?.error?.("Couldn't reach CardInject's settings.") ?? alert("Couldn't reach CardInject's settings.");
+    }
+    setTimeout(() => $btn.text(originalText), 1400);
 }
 
 function copyKinkOnly(idx, $btn) {
@@ -493,11 +654,18 @@ function populateCharacterSelect() {
 function updateChatNote() {
     const settings = ensureSettings();
     const $note = $("#kink-extractor-chat-note");
+    const $chatBtn = $("#kink-extractor-more-chat");
+    const chatAvailable = settings.chatMessageCount > 0
+        && selectedCharIndex !== null
+        && isSelectedCharacterActiveChat(selectedCharIndex);
+
+    $chatBtn.prop("disabled", !chatAvailable);
+
     if (!settings.chatMessageCount || settings.chatMessageCount <= 0) {
         $note.text("");
         return;
     }
-    if (selectedCharIndex !== null && isSelectedCharacterActiveChat(selectedCharIndex)) {
+    if (chatAvailable) {
         $note.text(`Will include the last ${settings.chatMessageCount} messages from the currently open chat.`);
     } else {
         $note.text("This character's chat isn't currently open, so chat messages can't be included right now.");
@@ -551,7 +719,14 @@ function buildPopup() {
 
                 <div class="kink-extractor-buttons">
                     <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
-                    <button id="kink-extractor-more" class="menu_button">More suggestions</button>
+                </div>
+
+                <div class="kink-extractor-more-label">Add more suggestions</div>
+                <div class="kink-extractor-more-grid">
+                    <button id="kink-extractor-more-explicit" class="menu_button" data-section="explicit">📄 Sheet</button>
+                    <button id="kink-extractor-more-inferred" class="menu_button" data-section="inferred">🤖 AI</button>
+                    <button id="kink-extractor-more-chat" class="menu_button" data-section="chat">💬 Chat</button>
+                    <button id="kink-extractor-more-all" class="menu_button">🔀 All</button>
                 </div>
 
                 <div class="kink-extractor-result-header">
@@ -590,7 +765,17 @@ function buildPopup() {
     });
 
     $("#kink-extractor-analyze").on("click", () => runFullAnalysis("analyze"));
-    $("#kink-extractor-more").on("click", () => runFullAnalysis("more"));
+
+    $("#kink-extractor-more-explicit").on("click", function () {
+        runSectionOnlyAnalysis(SECTION_EXPLICIT, $(this));
+    });
+    $("#kink-extractor-more-inferred").on("click", function () {
+        runSectionOnlyAnalysis(SECTION_INFERRED, $(this));
+    });
+    $("#kink-extractor-more-chat").on("click", function () {
+        runSectionOnlyAnalysis(SECTION_CHAT, $(this));
+    });
+    $("#kink-extractor-more-all").on("click", () => runFullAnalysis("more"));
     $("#kink-extractor-copy").on("click", copyResultToClipboard);
 
     $("#kink-extractor-search").on("input", function () {
