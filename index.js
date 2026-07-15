@@ -1,9 +1,8 @@
-// 킨크 추출기 - CharSheet 기반 킨크 추출 + AI 추천 (텍스트 출력)
+// 킨크 추출기 - CharSheet 기반 킨크 추출 + AI 추천 (텍스트 출력, 캐릭터별 저장, 마법봉 메뉴 진입)
 const EXT_ID = "kink-extractor";
 
 const defaultSettings = {
-    lastResult: "",
-    isAdultConfirmed: false,
+    perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, lastResult }
 };
 
 let extension_settings, getContext, generateRaw, saveSettingsDebounced;
@@ -39,12 +38,28 @@ function ensureSettings() {
     if (!extension_settings[EXT_ID]) {
         extension_settings[EXT_ID] = structuredClone(defaultSettings);
     }
-    for (const key of Object.keys(defaultSettings)) {
-        if (extension_settings[EXT_ID][key] === undefined) {
-            extension_settings[EXT_ID][key] = defaultSettings[key];
-        }
+    if (!extension_settings[EXT_ID].perCharacter) {
+        extension_settings[EXT_ID].perCharacter = {};
     }
     return extension_settings[EXT_ID];
+}
+
+// 캐릭터별로 결과/체크박스를 분리 저장하기 위한 고유 키
+function getCharacterKey() {
+    const context = getContext();
+    const char = context.characters?.[context.characterId];
+    if (!char) return null;
+    return char.avatar || char.name || String(context.characterId);
+}
+
+function getCharEntry() {
+    const settings = ensureSettings();
+    const key = getCharacterKey();
+    if (!key) return null;
+    if (!settings.perCharacter[key]) {
+        settings.perCharacter[key] = { isAdultConfirmed: false, lastResult: "" };
+    }
+    return settings.perCharacter[key];
 }
 
 function getCurrentCharSheet() {
@@ -62,37 +77,37 @@ function getCurrentCharSheet() {
 }
 
 function buildPrompt(sheet, mode, previousResult) {
-    const charName = sheet.name || "이 캐릭터";
-    const base = `너는 성인 롤플레이 캐릭터 시트를 분석하는 어시스턴트야. 아래 캐릭터 시트를 읽고, ${charName}에게서 드러나는 성적 취향/킨크를 정리해줘.
-이 작업은 명시적으로 성인(만 18세 이상) 캐릭터에 한정된다는 전제 하에 진행돼.
+    const charName = sheet.name || "this character";
+    const base = `You are an assistant that analyzes adult roleplay character sheets. Read the character sheet below and identify the sexual kinks/preferences ${charName} possesses.
+This task is strictly limited to characters who are adults (18+ years old).
 
-출력은 반드시 아래 형식의 마크다운 텍스트로만 작성해. 각 항목은 "kink"와 "근거" 두 줄이 한 쌍이고, 둘 다 완결된 문장의 줄글로 서술해:
+Respond ONLY in English, in the exact plain-text format below. Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences. State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").
 
-## 캐시트 기반 (명시됨)
-kink: [어떤 킨크/취향인지 자연스러운 문장으로 서술]
-근거: [시트의 어느 부분에서 그렇게 판단했는지 자연스러운 문장으로 서술]
+## From Character Sheet (Explicit)
+Kink: [a natural sentence stating the kink/preference ${charName} has]
+Reason: [a natural sentence explaining which part of the sheet supports this]
 
-kink: ...
-근거: ...
+Kink: ...
+Reason: ...
 
-## AI 추천 (확장)
-kink: [어떤 킨크/취향인지 자연스러운 문장으로 서술]
-근거: [캐릭터 설정과 왜 어울리는지 자연스러운 문장으로 서술]
+## AI-Inferred (Expanded)
+Kink: [a natural sentence stating a kink/preference ${charName} has]
+Reason: [a natural sentence explaining why it fits the character's established traits]
 
-각 섹션에 항목을 3~6개 작성해. 하이픈(-)이나 리스트 기호는 쓰지 말고, "kink:"와 "근거:" 라벨만 사용해. JSON이나 코드블록 없이 순수 텍스트로만 출력해.
+Write 3 to 6 entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
 
---- 캐릭터 시트 ---
-이름: ${sheet.name}
-설명: ${sheet.description}
-성격: ${sheet.personality}
-시나리오: ${sheet.scenario}
-대화 예시: ${sheet.mes_example}
---- 끝 ---`;
+--- Character Sheet ---
+Name: ${sheet.name}
+Description: ${sheet.description}
+Personality: ${sheet.personality}
+Scenario: ${sheet.scenario}
+Example dialogue: ${sheet.mes_example}
+--- End ---`;
 
     if (mode === "more" && previousResult) {
         return `${base}
 
-이전에 이미 아래 항목들을 제시했어. 이번에는 겹치지 않는 새로운 항목으로 다시 만들어줘:
+You already produced the following entries earlier. This time, produce new entries that do not overlap with them:
 
 ${previousResult}`;
     }
@@ -107,7 +122,7 @@ function escapeHtml(text) {
 function renderResult(text) {
     const $out = $("#kink-extractor-result");
     if (!text) {
-        $out.html('<div class="kink-extractor-placeholder">아직 분석 결과가 없어요.</div>');
+        $out.html('<div class="kink-extractor-placeholder">No analysis yet.</div>');
         return;
     }
 
@@ -117,7 +132,6 @@ function renderResult(text) {
 
     for (const rawLine of lines) {
         const line = rawLine.trim();
-
         if (!line) continue;
 
         if (line.startsWith("##")) {
@@ -126,20 +140,19 @@ function renderResult(text) {
             continue;
         }
 
-        const labelMatch = line.match(/^(kink|근거)\s*[:：]\s*(.*)$/i);
+        const labelMatch = line.match(/^(kink|reason)\s*[:：]\s*(.*)$/i);
         if (labelMatch) {
             const [, rawLabel, rest] = labelMatch;
-            const label = rawLabel.toLowerCase() === "kink" ? "kink" : "근거";
-            if (label === "kink") {
+            const label = rawLabel.toLowerCase() === "kink" ? "Kink" : "Reason";
+            if (label === "Kink") {
                 if (itemOpen) html += "</div>";
                 html += '<div class="kink-item">';
                 itemOpen = true;
             }
-            html += `<p class="prose-line"><span class="field-label">${escapeHtml(label)}:</span> ${escapeHtml(rest)}</p>`;
+            html += `<p class="prose-line"><span class="field-label">${label}:</span> ${escapeHtml(rest)}</p>`;
             continue;
         }
 
-        // 라벨이 안 붙은 일반 줄글은 그대로 출력
         html += `<p class="prose-line">${escapeHtml(line)}</p>`;
     }
 
@@ -149,81 +162,132 @@ function renderResult(text) {
 }
 
 async function runAnalysis(mode) {
-    const settings = ensureSettings();
+    const entry = getCharEntry();
+    if (!entry) {
+        toastr?.warning?.("No character selected.") ?? alert("No character selected.");
+        return;
+    }
 
-    if (!settings.isAdultConfirmed) {
-        toastr?.warning?.("먼저 '이 캐릭터는 성인입니다'를 체크해줘.") ?? alert("먼저 '이 캐릭터는 성인입니다'를 체크해줘.");
+    if (!entry.isAdultConfirmed) {
+        toastr?.warning?.("Please check 'This character is an adult' first.") ?? alert("Please check 'This character is an adult' first.");
         return;
     }
 
     const sheet = getCurrentCharSheet();
     if (!sheet) {
-        toastr?.warning?.("선택된 캐릭터가 없어.") ?? alert("선택된 캐릭터가 없어.");
+        toastr?.warning?.("No character selected.") ?? alert("No character selected.");
         return;
     }
 
     const $btn = mode === "more" ? $("#kink-extractor-more") : $("#kink-extractor-analyze");
     const originalText = $btn.text();
-    $btn.prop("disabled", true).text("분석 중...");
+    $btn.prop("disabled", true).text("Analyzing...");
 
     try {
-        const prompt = buildPrompt(sheet, mode, settings.lastResult);
+        const prompt = buildPrompt(sheet, mode, entry.lastResult);
         const result = await generateRaw(prompt);
-        const finalText = mode === "more" && settings.lastResult
-            ? `${settings.lastResult}\n\n---\n\n${result}`
+        const finalText = mode === "more" && entry.lastResult
+            ? `${entry.lastResult}\n\n---\n\n${result}`
             : result;
 
-        settings.lastResult = finalText;
+        entry.lastResult = finalText;
         saveSettingsDebounced?.();
         renderResult(finalText);
     } catch (e) {
         console.error(`[${EXT_ID}] 분석 실패`, e);
-        toastr?.error?.("분석 중 오류가 발생했어. 콘솔을 확인해줘.") ?? alert("분석 중 오류가 발생했어.");
+        toastr?.error?.("An error occurred during analysis. Check the console.") ?? alert("An error occurred during analysis.");
     } finally {
         $btn.prop("disabled", false).text(originalText);
     }
 }
 
-function buildPanel() {
+function refreshPopupForCurrentCharacter() {
+    const entry = getCharEntry();
+    const context = getContext();
+    const char = context.characters?.[context.characterId];
+
+    $("#kink-extractor-char-name").text(char?.name || "No character selected");
+    $("#kink-extractor-adult-confirm").prop("checked", !!entry?.isAdultConfirmed);
+    renderResult(entry?.lastResult || "");
+}
+
+function buildPopup() {
+    if ($("#kink-extractor-overlay").length) return;
+
     const html = `
-    <div id="kink-extractor-panel" class="kink-extractor-panel">
-        <div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header">
-                <b>킨크 추출기</b>
-                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    <div id="kink-extractor-overlay" class="kink-extractor-overlay">
+        <div id="kink-extractor-popup" class="kink-extractor-popup">
+            <div class="kink-extractor-popup-header">
+                <b>Kink Extractor</b>
+                <span id="kink-extractor-close" class="kink-extractor-close">✕</span>
             </div>
-            <div class="inline-drawer-content">
+            <div class="kink-extractor-popup-body">
+                <div id="kink-extractor-char-name" class="kink-extractor-char-name"></div>
                 <label class="checkbox_label" for="kink-extractor-adult-confirm">
                     <input id="kink-extractor-adult-confirm" type="checkbox">
-                    <span>이 캐릭터는 성인(만 18세 이상)입니다</span>
+                    <span>This character is an adult (18+)</span>
                 </label>
                 <div class="kink-extractor-buttons">
-                    <button id="kink-extractor-analyze" class="menu_button">분석하기</button>
-                    <button id="kink-extractor-more" class="menu_button">추천 더 받기</button>
+                    <button id="kink-extractor-analyze" class="menu_button">Analyze</button>
+                    <button id="kink-extractor-more" class="menu_button">More suggestions</button>
                 </div>
                 <div id="kink-extractor-result" class="kink-extractor-result"></div>
             </div>
         </div>
     </div>`;
 
-    $("#extensions_settings2").append(html);
+    // MovingUI의 body transform 때문에 position:fixed가 깨지는 문제 회피 -> documentElement에 부착
+    $(document.documentElement).append(html);
 
     $("#kink-extractor-adult-confirm").on("change", function () {
-        const settings = ensureSettings();
-        settings.isAdultConfirmed = $(this).is(":checked");
+        const entry = getCharEntry();
+        if (!entry) return;
+        entry.isAdultConfirmed = $(this).is(":checked");
         saveSettingsDebounced?.();
     });
 
     $("#kink-extractor-analyze").on("click", () => runAnalysis("analyze"));
     $("#kink-extractor-more").on("click", () => runAnalysis("more"));
+
+    $("#kink-extractor-close").on("click", closePopup);
+    $("#kink-extractor-overlay").on("click", function (e) {
+        if (e.target.id === "kink-extractor-overlay") closePopup();
+    });
+}
+
+function openPopup() {
+    buildPopup();
+    refreshPopupForCurrentCharacter();
+    $("#kink-extractor-overlay").addClass("open");
+}
+
+function closePopup() {
+    $("#kink-extractor-overlay").removeClass("open");
+}
+
+function addWandButton() {
+    const buttonHtml = `
+    <div id="kink-extractor-wand-button" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
+        <div class="fa-solid fa-wand-magic-sparkles extensionsMenuExtensionButton"></div>
+        <span>Kink Extractor</span>
+    </div>`;
+
+    // ST 마법봉(확장 메뉴) 팝업에 버튼 추가
+    const $menu = $("#extensionsMenu");
+    if ($menu.length) {
+        $menu.append(buttonHtml);
+        $("#kink-extractor-wand-button").on("click", () => {
+            openPopup();
+        });
+    } else {
+        console.warn(`[${EXT_ID}] #extensionsMenu를 찾지 못했어 - ST 버전에 따라 셀렉터 조정이 필요할 수 있어.`);
+    }
 }
 
 jQuery(async () => {
     const ok = await loadModules();
     if (!ok) return;
 
-    const settings = ensureSettings();
-    buildPanel();
-    $("#kink-extractor-adult-confirm").prop("checked", !!settings.isAdultConfirmed);
-    renderResult(settings.lastResult);
+    ensureSettings();
+    addWandButton();
 });
