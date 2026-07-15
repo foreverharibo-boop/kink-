@@ -1,11 +1,21 @@
 // 킨크 추출기 - CharSheet 기반 킨크 추출 + AI 추천 (텍스트 출력, 캐릭터별 저장, 마법봉 메뉴 진입)
+// 결과는 items 배열([{section, kink, reason}])로 구조화해서 저장 -> 개별 리롤 / 검색 필터 / 복사 지원
 const EXT_ID = "kink-extractor";
 
+const SECTION_EXPLICIT = "explicit";
+const SECTION_INFERRED = "inferred";
+const SECTION_TITLES = {
+    [SECTION_EXPLICIT]: "From Character Sheet (Explicit)",
+    [SECTION_INFERRED]: "AI-Inferred (Expanded)",
+};
+
 const defaultSettings = {
-    perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, lastResult }
+    perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, items: [{section, kink, reason}] }
 };
 
 let extension_settings, getContext, generateRaw, saveSettingsDebounced;
+let selectedCharIndex = null;
+let searchTerm = "";
 
 // 알려진 이슈: 정적 import가 조용히 실패하는 경우가 있어 동적 import + window 폴백을 사용
 async function loadModules() {
@@ -44,9 +54,6 @@ function ensureSettings() {
     return extension_settings[EXT_ID];
 }
 
-// 드롭다운에서 선택된 캐릭터 인덱스 (팝업 세션 동안만 유지)
-let selectedCharIndex = null;
-
 function getAllCharacters() {
     const context = getContext();
     return context.characters || [];
@@ -64,7 +71,10 @@ function getEntryByIndex(idx) {
     const key = getCharacterKeyByIndex(idx);
     if (!key) return null;
     if (!settings.perCharacter[key]) {
-        settings.perCharacter[key] = { isAdultConfirmed: false, lastResult: "" };
+        settings.perCharacter[key] = { isAdultConfirmed: false, items: [] };
+    }
+    if (!settings.perCharacter[key].items) {
+        settings.perCharacter[key].items = [];
     }
     return settings.perCharacter[key];
 }
@@ -83,12 +93,75 @@ function getSheetByIndex(idx) {
     };
 }
 
-function buildPrompt(sheet, mode, previousResult) {
-    const charName = sheet.name || "this character";
-    const base = `You are an assistant that analyzes adult roleplay character sheets. Read the character sheet below and identify the sexual kinks/preferences ${charName} possesses.
-This task is strictly limited to characters who are adults (18+ years old).
+// ---------- 파싱/직렬화 ----------
 
-Respond ONLY in English, in the exact plain-text format below. Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences. State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").
+// AI 응답 텍스트(섹션 헤더 + Kink/Reason 쌍)를 items 배열로 파싱
+function parseItemsFromText(text) {
+    const lines = text.split("\n");
+    let currentSection = SECTION_EXPLICIT;
+    const items = [];
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        if (line.startsWith("##")) {
+            const headerText = line.replace(/^##\s*/, "").toLowerCase();
+            currentSection = headerText.includes("infer") ? SECTION_INFERRED : SECTION_EXPLICIT;
+            continue;
+        }
+
+        const kinkMatch = line.match(/^kink\s*[:：]\s*(.*)$/i);
+        if (kinkMatch) {
+            items.push({ section: currentSection, kink: kinkMatch[1], reason: "" });
+            continue;
+        }
+
+        const reasonMatch = line.match(/^reason\s*[:：]\s*(.*)$/i);
+        if (reasonMatch && items.length) {
+            items[items.length - 1].reason = reasonMatch[1];
+        }
+    }
+
+    return items;
+}
+
+// items 배열을 다시 AI 프롬프트/복사용 텍스트로 직렬화
+function serializeItems(items) {
+    let out = "";
+    for (const sectionKey of [SECTION_EXPLICIT, SECTION_INFERRED]) {
+        const group = items.filter((it) => it.section === sectionKey);
+        if (!group.length) continue;
+        out += `## ${SECTION_TITLES[sectionKey]}\n`;
+        for (const it of group) {
+            out += `Kink: ${it.kink}\nReason: ${it.reason}\n\n`;
+        }
+    }
+    return out.trim();
+}
+
+// ---------- 프롬프트 ----------
+
+function sheetBlock(sheet) {
+    return `--- Character Sheet ---
+Name: ${sheet.name}
+Description: ${sheet.description}
+Personality: ${sheet.personality}
+Scenario: ${sheet.scenario}
+Example dialogue: ${sheet.mes_example}
+--- End ---`;
+}
+
+function commonInstructions(charName) {
+    return `You are an assistant that analyzes adult roleplay character sheets. This task is strictly limited to characters who are adults (18+ years old).
+State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").`;
+}
+
+function buildFullPrompt(sheet) {
+    const charName = sheet.name || "this character";
+    return `${commonInstructions(charName)}
+
+Respond ONLY in English, in the exact plain-text format below. Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences.
 
 ## From Character Sheet (Explicit)
 Kink: [a natural sentence stating the kink/preference ${charName} has]
@@ -103,82 +176,103 @@ Reason: [a natural sentence explaining why it fits the character's established t
 
 Write 3 to 6 entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
 
---- Character Sheet ---
-Name: ${sheet.name}
-Description: ${sheet.description}
-Personality: ${sheet.personality}
-Scenario: ${sheet.scenario}
-Example dialogue: ${sheet.mes_example}
---- End ---`;
+${sheetBlock(sheet)}`;
+}
 
-    if (mode === "more" && previousResult) {
-        return `${base}
+function buildMorePrompt(sheet, existingItems) {
+    const charName = sheet.name || "this character";
+    const existingText = serializeItems(existingItems);
+    return `${buildFullPrompt(sheet)}
 
 You already produced the following entries earlier. This time, produce new entries that do not overlap with them:
 
-${previousResult}`;
-    }
-
-    return base;
+${existingText}`;
 }
+
+function buildSingleRerollPrompt(sheet, section, existingItems) {
+    const charName = sheet.name || "this character";
+    const existingText = serializeItems(existingItems);
+    const sectionLabel = SECTION_TITLES[section];
+    return `${commonInstructions(charName)}
+
+Produce exactly ONE new entry for the category "${sectionLabel}" that is different from all entries listed below. Respond ONLY in English with exactly these two lines and nothing else:
+
+Kink: [a natural sentence stating the kink/preference ${charName} has]
+Reason: [a natural sentence explaining the basis for it]
+
+Existing entries to avoid duplicating:
+${existingText}
+
+${sheetBlock(sheet)}`;
+}
+
+// ---------- 렌더링 ----------
 
 function escapeHtml(text) {
     return $("<div>").text(text).html();
 }
 
-function renderResult(text) {
+function itemMatchesSearch(item, term) {
+    if (!term) return true;
+    const haystack = `${item.kink} ${item.reason}`.toLowerCase();
+    return haystack.includes(term.toLowerCase());
+}
+
+function renderResult(items) {
     const $out = $("#kink-extractor-result");
-    if (!text) {
+
+    if (!items || !items.length) {
         $out.html('<div class="kink-extractor-placeholder">No analysis yet.</div>');
         return;
     }
 
-    const lines = text.split("\n");
     let html = "";
-    let itemOpen = false;
+    let anyVisible = false;
 
-    for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
+    for (const sectionKey of [SECTION_EXPLICIT, SECTION_INFERRED]) {
+        const group = items
+            .map((it, idx) => ({ ...it, idx }))
+            .filter((it) => it.section === sectionKey);
+        if (!group.length) continue;
 
-        if (line.startsWith("##")) {
-            if (itemOpen) { html += "</div>"; itemOpen = false; }
-            html += `<div class="section-title">${escapeHtml(line.replace(/^##\s*/, ""))}</div>`;
-            continue;
+        const visibleGroup = group.filter((it) => itemMatchesSearch(it, searchTerm));
+        if (!visibleGroup.length) continue;
+
+        anyVisible = true;
+        html += `<div class="section-title">${escapeHtml(SECTION_TITLES[sectionKey])}</div>`;
+        for (const it of visibleGroup) {
+            html += `
+            <div class="kink-item" data-idx="${it.idx}">
+                <p class="prose-line"><span class="field-label">Kink:</span> ${escapeHtml(it.kink)}</p>
+                <p class="prose-line"><span class="field-label">Reason:</span> ${escapeHtml(it.reason)}</p>
+                <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁 Reroll</button>
+            </div>`;
         }
-
-        const labelMatch = line.match(/^(kink|reason)\s*[:：]\s*(.*)$/i);
-        if (labelMatch) {
-            const [, rawLabel, rest] = labelMatch;
-            const label = rawLabel.toLowerCase() === "kink" ? "Kink" : "Reason";
-            if (label === "Kink") {
-                if (itemOpen) html += "</div>";
-                html += '<div class="kink-item">';
-                itemOpen = true;
-            }
-            html += `<p class="prose-line"><span class="field-label">${label}:</span> ${escapeHtml(rest)}</p>`;
-            continue;
-        }
-
-        html += `<p class="prose-line">${escapeHtml(line)}</p>`;
     }
 
-    if (itemOpen) html += "</div>";
+    if (!anyVisible) {
+        $out.html('<div class="kink-extractor-placeholder">No entries match your search.</div>');
+        return;
+    }
 
-    $out.html(html || `<pre class="kink-extractor-text">${escapeHtml(text)}</pre>`);
+    $out.html(html);
+
+    $out.find(".kink-reroll-btn").on("click", function () {
+        const idx = Number($(this).data("idx"));
+        rerollItem(idx);
+    });
 }
 
-async function runAnalysis(mode) {
+// ---------- 액션 ----------
+
+async function runFullAnalysis(mode) {
     if (selectedCharIndex === null) {
         toastr?.warning?.("No character selected.") ?? alert("No character selected.");
         return;
     }
 
     const entry = getEntryByIndex(selectedCharIndex);
-    if (!entry) {
-        toastr?.warning?.("No character selected.") ?? alert("No character selected.");
-        return;
-    }
+    if (!entry) return;
 
     if (!entry.isAdultConfirmed) {
         toastr?.warning?.("Please check 'This character is an adult' first.") ?? alert("Please check 'This character is an adult' first.");
@@ -186,25 +280,23 @@ async function runAnalysis(mode) {
     }
 
     const sheet = getSheetByIndex(selectedCharIndex);
-    if (!sheet) {
-        toastr?.warning?.("No character selected.") ?? alert("No character selected.");
-        return;
-    }
+    if (!sheet) return;
 
     const $btn = mode === "more" ? $("#kink-extractor-more") : $("#kink-extractor-analyze");
     const originalText = $btn.text();
-    $btn.prop("disabled", true).text("Analyzing...");
+    $btn.prop("disabled", true).text("Working...");
 
     try {
-        const prompt = buildPrompt(sheet, mode, entry.lastResult);
-        const result = await generateRaw(prompt);
-        const finalText = mode === "more" && entry.lastResult
-            ? `${entry.lastResult}\n\n---\n\n${result}`
-            : result;
+        const prompt = mode === "more" && entry.items.length
+            ? buildMorePrompt(sheet, entry.items)
+            : buildFullPrompt(sheet);
 
-        entry.lastResult = finalText;
+        const result = await generateRaw(prompt);
+        const newItems = parseItemsFromText(result);
+
+        entry.items = mode === "more" ? [...entry.items, ...newItems] : newItems;
         saveSettingsDebounced?.();
-        renderResult(finalText);
+        renderResult(entry.items);
     } catch (e) {
         console.error(`[${EXT_ID}] 분석 실패`, e);
         toastr?.error?.("An error occurred during analysis. Check the console.") ?? alert("An error occurred during analysis.");
@@ -212,6 +304,84 @@ async function runAnalysis(mode) {
         $btn.prop("disabled", false).text(originalText);
     }
 }
+
+async function rerollItem(idx) {
+    if (selectedCharIndex === null) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry || !entry.items[idx]) return;
+
+    const sheet = getSheetByIndex(selectedCharIndex);
+    if (!sheet) return;
+
+    const $item = $(`.kink-item[data-idx="${idx}"]`);
+    const $btn = $item.find(".kink-reroll-btn");
+    $btn.prop("disabled", true).text("Rerolling...");
+
+    try {
+        const originalSection = entry.items[idx].section;
+        const prompt = buildSingleRerollPrompt(sheet, originalSection, entry.items);
+        const result = await generateRaw(prompt);
+        const parsed = parseItemsFromText(result);
+
+        if (parsed.length) {
+            entry.items[idx] = { section: originalSection, kink: parsed[0].kink, reason: parsed[0].reason };
+            saveSettingsDebounced?.();
+            renderResult(entry.items);
+        } else {
+            toastr?.warning?.("Could not parse the reroll result.") ?? alert("Could not parse the reroll result.");
+            $btn.prop("disabled", false).text("🔁 Reroll");
+        }
+    } catch (e) {
+        console.error(`[${EXT_ID}] 리롤 실패`, e);
+        toastr?.error?.("Reroll failed. Check the console.") ?? alert("Reroll failed.");
+        $btn.prop("disabled", false).text("🔁 Reroll");
+    }
+}
+
+function copyResultToClipboard() {
+    if (selectedCharIndex === null) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry || !entry.items.length) {
+        toastr?.info?.("Nothing to copy yet.") ?? alert("Nothing to copy yet.");
+        return;
+    }
+
+    const text = serializeItems(entry.items);
+    const $btn = $("#kink-extractor-copy");
+    const originalText = $btn.text();
+
+    const onSuccess = () => {
+        $btn.text("Copied!");
+        setTimeout(() => $btn.text(originalText), 1200);
+    };
+    const onFail = () => {
+        toastr?.error?.("Copy failed - please copy manually.") ?? alert("Copy failed - please copy manually.");
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onSuccess).catch(() => {
+            legacyCopy(text) ? onSuccess() : onFail();
+        });
+    } else {
+        legacyCopy(text) ? onSuccess() : onFail();
+    }
+}
+
+// 구형 웹뷰(Samsung Internet PWA 등) 대비 execCommand 폴백
+function legacyCopy(text) {
+    try {
+        const $temp = $("<textarea>").val(text).css({ position: "fixed", opacity: 0 });
+        $("body").append($temp);
+        $temp[0].select();
+        const ok = document.execCommand("copy");
+        $temp.remove();
+        return ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+// ---------- 팝업/UI ----------
 
 function populateCharacterSelect() {
     const context = getContext();
@@ -223,21 +393,23 @@ function populateCharacterSelect() {
         $select.append(`<option value="${idx}">${escapeHtml(char.name || "(unnamed)")}</option>`);
     });
 
-    // 현재 채팅에 열려있는 캐릭터를 기본 선택값으로
     const defaultIdx = context.characterId !== undefined && chars[context.characterId] ? context.characterId : 0;
     selectedCharIndex = chars.length ? defaultIdx : null;
     $select.val(selectedCharIndex);
 }
 
 function refreshPopupForSelectedCharacter() {
+    searchTerm = "";
+    $("#kink-extractor-search").val("");
+
     if (selectedCharIndex === null) {
         $("#kink-extractor-adult-confirm").prop("checked", false);
-        renderResult("");
+        renderResult([]);
         return;
     }
     const entry = getEntryByIndex(selectedCharIndex);
     $("#kink-extractor-adult-confirm").prop("checked", !!entry?.isAdultConfirmed);
-    renderResult(entry?.lastResult || "");
+    renderResult(entry?.items || []);
 }
 
 function buildPopup() {
@@ -264,6 +436,12 @@ function buildPopup() {
                     <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
                     <button id="kink-extractor-more" class="menu_button">More suggestions</button>
                 </div>
+
+                <div class="kink-extractor-result-header">
+                    <input id="kink-extractor-search" class="kink-extractor-search" type="text" placeholder="Search results...">
+                    <button id="kink-extractor-copy" class="kink-extractor-copy-btn" title="Copy all results">Copy</button>
+                </div>
+
                 <div id="kink-extractor-result" class="kink-extractor-result"></div>
                 <div class="kink-extractor-footnote">Saved automatically per character on this device's server settings.</div>
             </div>
@@ -286,8 +464,16 @@ function buildPopup() {
         saveSettingsDebounced?.();
     });
 
-    $("#kink-extractor-analyze").on("click", () => runAnalysis("analyze"));
-    $("#kink-extractor-more").on("click", () => runAnalysis("more"));
+    $("#kink-extractor-analyze").on("click", () => runFullAnalysis("analyze"));
+    $("#kink-extractor-more").on("click", () => runFullAnalysis("more"));
+    $("#kink-extractor-copy").on("click", copyResultToClipboard);
+
+    $("#kink-extractor-search").on("input", function () {
+        searchTerm = $(this).val();
+        if (selectedCharIndex === null) return;
+        const entry = getEntryByIndex(selectedCharIndex);
+        renderResult(entry?.items || []);
+    });
 
     $("#kink-extractor-close").on("click", closePopup);
     $("#kink-extractor-overlay").on("click", function (e) {
@@ -300,7 +486,6 @@ function openPopup() {
     populateCharacterSelect();
     refreshPopupForSelectedCharacter();
 
-    // 마법봉(확장 메뉴) 드롭다운이 우리 팝업 위/아래로 겹치는 z-index 충돌 방지 - 열려있으면 숨김
     const $wandMenu = $("#extensionsMenu");
     if ($wandMenu.length && $wandMenu.is(":visible")) {
         $wandMenu.data("kink-extractor-was-open", true).hide();
@@ -325,7 +510,6 @@ function addWandButton() {
         <span>Kink Extractor</span>
     </div>`;
 
-    // ST 마법봉(확장 메뉴) 팝업에 버튼 추가
     const $menu = $("#extensionsMenu");
     if ($menu.length) {
         $menu.append(buttonHtml);
