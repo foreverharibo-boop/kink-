@@ -201,50 +201,76 @@ function getRecentChatText(idx, count) {
 }
 
 // 캐릭터 카드에 바인딩된 primary 로어북 이름 (없으면 null)
-function getBoundLorebookName(idx) {
+function getCharacterLorebookName(idx) {
     const chars = getAllCharacters();
     const char = chars[idx];
     if (!char) return null;
     return char.data?.extensions?.world || char.world || null;
 }
 
-// 로어북을 읽어서, key/comment/content에 킨크 관련 키워드가 있는 항목만 골라 텍스트로 합쳐줌
-// 채팅 로그와 달리 "지금 열려있는 채팅"이 아니어도 됨 - 캐릭터에 바인딩된 로어북 이름만 있으면 어떤 캐릭터든 읽을 수 있음
-async function getLorebookKinkText(idx) {
-    const bookName = getBoundLorebookName(idx);
-    if (!bookName) return { status: "no-book", text: null, bookName: null };
+// 챗 로어(그 채팅에만 연결된 로어북) 이름 - 채팅 로그와 마찬가지로 "지금 열려있는 채팅"일 때만 접근 가능
+function getChatLorebookName(idx) {
+    if (!isSelectedCharacterActiveChat(idx)) return null;
+    const context = getContext();
+    return context.chatMetadata?.world_info || null;
+}
 
-    let data;
-    try {
-        data = await loadWorldInfo(bookName);
-    } catch (e) {
-        console.error(`[${EXT_ID}] 로어북 로드 실패: ${bookName}`, e);
-        return { status: "load-failed", text: null, bookName };
+// 캐릭터 로어 + 챗 로어를 모두 읽어서, key/comment/content에 킨크 관련 키워드가 있는 항목만 골라 텍스트로 합쳐줌
+// 캐릭터 로어는 어떤 캐릭터를 골라도 읽을 수 있지만, 챗 로어는 지금 열려있는 채팅일 때만 읽을 수 있음
+async function getLorebookKinkText(idx) {
+    const charBookName = getCharacterLorebookName(idx);
+    const chatBookName = getChatLorebookName(idx);
+    // 같은 이름이면 중복으로 두 번 안 읽도록
+    const bookNames = [...new Set([charBookName, chatBookName].filter(Boolean))];
+
+    if (!bookNames.length) return { status: "no-book", text: null, bookNames: [] };
+
+    const allMatched = [];
+    const loadedBookNames = [];
+    let anyLoadFailed = false;
+
+    for (const bookName of bookNames) {
+        let data;
+        try {
+            data = await loadWorldInfo(bookName);
+        } catch (e) {
+            console.error(`[${EXT_ID}] 로어북 로드 실패: ${bookName}`, e);
+            anyLoadFailed = true;
+            continue;
+        }
+
+        const entries = data?.entries ? Object.values(data.entries) : [];
+        if (!entries.length) continue;
+
+        loadedBookNames.push(bookName);
+        const matched = entries.filter((entry) => {
+            const haystack = [
+                ...(Array.isArray(entry.key) ? entry.key : []),
+                ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : []),
+                entry.comment || "",
+                entry.content || "",
+            ].join(" ").toLowerCase();
+            return LOREBOOK_KEYWORDS.some((kw) => haystack.includes(kw));
+        });
+
+        allMatched.push(...matched);
     }
 
-    const entries = data?.entries ? Object.values(data.entries) : [];
-    if (!entries.length) return { status: "empty", text: null, bookName };
+    if (!loadedBookNames.length && anyLoadFailed) {
+        return { status: "load-failed", text: null, bookNames };
+    }
+    if (!allMatched.length) {
+        return { status: "no-match", text: null, bookNames };
+    }
 
-    const matched = entries.filter((entry) => {
-        const haystack = [
-            ...(Array.isArray(entry.key) ? entry.key : []),
-            ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : []),
-            entry.comment || "",
-            entry.content || "",
-        ].join(" ").toLowerCase();
-        return LOREBOOK_KEYWORDS.some((kw) => haystack.includes(kw));
-    });
-
-    if (!matched.length) return { status: "no-match", text: null, bookName };
-
-    const text = matched
+    const text = allMatched
         .map((entry) => {
             const label = entry.comment || (Array.isArray(entry.key) ? entry.key.join(", ") : "") || "(untitled entry)";
             return `${label}: ${(entry.content || "").replace(/\s+/g, " ").trim()}`;
         })
         .join("\n");
 
-    return { status: "ok", text, bookName, count: matched.length };
+    return { status: "ok", text, bookNames: loadedBookNames, count: allMatched.length };
 }
 
 // ---------- 파싱/직렬화 ----------
@@ -627,8 +653,8 @@ async function runSectionOnlyAnalysis(section, $btn) {
         lorebookText = lorebookResult.text;
         if (!lorebookText) {
             const msg = lorebookResult.status === "no-book"
-                ? "This character has no bound lorebook."
-                : "No kink-related entries found in this character's lorebook.";
+                ? "This character has no bound lorebook (character or chat)."
+                : "No kink-related entries found in this character's lorebook(s).";
             toastr?.warning?.(msg) ?? alert(msg);
             return;
         }
@@ -831,24 +857,30 @@ async function updateLorebookNote() {
         return;
     }
 
-    const bookName = getBoundLorebookName(selectedCharIndex);
-    if (!bookName) {
-        $note.text("This character has no bound lorebook.");
+    const charBookName = getCharacterLorebookName(selectedCharIndex);
+    const chatBookName = getChatLorebookName(selectedCharIndex);
+    if (!charBookName && !chatBookName) {
+        $note.text("This character has no bound lorebook (character or chat).");
         $lorebookBtn.prop("disabled", true);
         return;
     }
 
-    $note.text(`Checking lorebook "${bookName}"...`);
+    const sourceLabel = [
+        charBookName ? `character lore "${charBookName}"` : null,
+        chatBookName ? `chat lore "${chatBookName}"` : null,
+    ].filter(Boolean).join(" + ");
+
+    $note.text(`Checking ${sourceLabel}...`);
     const result = await getLorebookKinkText(selectedCharIndex);
 
     if (result.status === "ok") {
-        $note.text(`Found ${result.count} kink-related entries in "${bookName}".`);
+        $note.text(`Found ${result.count} kink-related entries in ${sourceLabel}.`);
         $lorebookBtn.prop("disabled", false);
     } else if (result.status === "no-match") {
-        $note.text(`Bound lorebook "${bookName}" has no kink-related entries.`);
+        $note.text(`No kink-related entries in ${sourceLabel}.`);
         $lorebookBtn.prop("disabled", true);
     } else if (result.status === "load-failed") {
-        $note.text(`Couldn't load lorebook "${bookName}".`);
+        $note.text(`Couldn't load ${sourceLabel}.`);
         $lorebookBtn.prop("disabled", true);
     } else {
         $note.text("");
