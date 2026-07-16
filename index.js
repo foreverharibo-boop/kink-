@@ -15,7 +15,28 @@ const SECTION_TITLES = {
 const SECTION_ORDER = [SECTION_EXPLICIT, SECTION_LOREBOOK, SECTION_CHAT, SECTION_INFERRED];
 
 // 로어북 항목 중에 이런 키워드가 key/comment/content에 있으면 "킨크 관련"으로 보고 뽑아옴
-const LOREBOOK_KEYWORDS = ["kink", "sex", "sexual", "fetish", "arousal", "desire", "intimacy", "nsfw", "erotic"];
+const LOREBOOK_KEYWORDS = [
+    // 기본
+    "kink", "kinky", "fetish", "fetishes",
+    "sex", "sexual", "sexuality", "sexually",
+    "erotic", "erotica", "nsfw", "lewd", "obscene", "taboo",
+    // 욕구/흥분
+    "arousal", "aroused", "arouse", "horny", "lust", "lustful", "libido", "aphrodisiac",
+    "desire", "desires", "carnal", "erogenous", "intimacy", "intimate",
+    // BDSM/역할
+    "bdsm", "dominant", "dominance", "domme", "dom", "submissive", "submission", "sub",
+    "master", "mistress", "slave", "pet play", "petplay", "primal",
+    // 구속/도구
+    "bondage", "bound", "restraint", "restraints", "rope", "collar", "leash",
+    "blindfold", "gag", "gagged", "handcuff", "handcuffs", "chain", "chains",
+    // 행위/플레이 스타일
+    "spank", "spanking", "choke", "choking", "breathplay", "breath play",
+    "degradation", "degrade", "humiliation", "humiliate", "punishment", "punish",
+    "orgasm", "climax", "foreplay", "seduce", "seduction", "seductive",
+    "virgin", "deflower", "voyeur", "voyeurism", "exhibitionist", "exhibitionism",
+    "masochist", "masochism", "sadist", "sadism", "tease", "teasing",
+    "moan", "possessive", "jealous", "temptation", "tempt", "forbidden",
+];
 
 const defaultSettings = {
     perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, items: [{section, kink, reason}] }
@@ -212,7 +233,33 @@ function getCharacterLorebookName(idx) {
 function getChatLorebookName(idx) {
     if (!isSelectedCharacterActiveChat(idx)) return null;
     const context = getContext();
-    return context.chatMetadata?.world_info || null;
+    const meta = context.chatMetadata || {};
+
+    // 챗 로어 필드명이 ST 버전마다 다를 수 있어서 여러 후보를 시도
+    const candidates = [
+        meta.world_info,
+        meta.world,
+        meta.chat_world_info,
+        meta.chatLore,
+        meta.chat_lore,
+    ];
+
+    for (const c of candidates) {
+        if (typeof c === "string" && c.trim()) return c.trim();
+    }
+
+    // 위에서 못 찾으면 ST UI의 챗 로어 드롭다운 DOM에서 직접 읽기 (연결 프로필과 같은 패턴)
+    try {
+        const $chatLoreSelect = $("#chat_world_info, select[id*='chat'][id*='lore'], select[id*='chat'][id*='world']");
+        if ($chatLoreSelect.length) {
+            const val = $chatLoreSelect.val();
+            if (val && val.trim()) return val.trim();
+        }
+    } catch (e) {
+        console.warn(`[${EXT_ID}] 챗 로어 DOM 읽기 실패`, e);
+    }
+
+    return null;
 }
 
 // 캐릭터 로어 + 챗 로어를 모두 읽어서, key/comment/content에 킨크 관련 키워드가 있는 항목만 골라 텍스트로 합쳐줌
