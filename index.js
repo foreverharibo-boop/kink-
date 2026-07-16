@@ -4,20 +4,25 @@ const EXT_ID = "kink-extractor";
 
 const SECTION_EXPLICIT = "explicit";
 const SECTION_CHAT = "chat";
+const SECTION_LOREBOOK = "lorebook";
 const SECTION_INFERRED = "inferred";
 const SECTION_TITLES = {
     [SECTION_EXPLICIT]: "From Character Sheet (Explicit)",
     [SECTION_CHAT]: "From Recent Chat (Observed)",
+    [SECTION_LOREBOOK]: "From Lorebook (Observed)",
     [SECTION_INFERRED]: "AI-Inferred (Expanded)",
 };
-const SECTION_ORDER = [SECTION_EXPLICIT, SECTION_CHAT, SECTION_INFERRED];
+const SECTION_ORDER = [SECTION_EXPLICIT, SECTION_LOREBOOK, SECTION_CHAT, SECTION_INFERRED];
+
+// 로어북 항목 중에 이런 키워드가 key/comment/content에 있으면 "킨크 관련"으로 보고 뽑아옴
+const LOREBOOK_KEYWORDS = ["kink", "sex", "sexual", "fetish", "arousal", "desire", "intimacy", "nsfw", "erotic"];
 
 const defaultSettings = {
     perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, items: [{section, kink, reason}] }
     chatMessageCount: 0, // 분석에 반영할 최근 채팅 메시지 개수 (0 = 반영 안 함), 전역 설정
 };
 
-let extension_settings, getContext, generateRaw, saveSettingsDebounced, ConnectionManagerRequestService;
+let extension_settings, getContext, generateRaw, saveSettingsDebounced, loadWorldInfo;
 let selectedCharIndex = null;
 let searchTerm = "";
 
@@ -41,11 +46,11 @@ async function loadModules() {
         saveSettingsDebounced = window.saveSettingsDebounced;
     }
 
-    // 연결 프로필별로 요청을 보내기 위한 서비스 - getContext()를 통해 가져오는 게 가장 안전함
+    // 로어북 읽기용 - getContext()를 통해 가져오는 게 가장 안전함
     try {
-        ConnectionManagerRequestService = getContext?.()?.ConnectionManagerRequestService ?? window.ConnectionManagerRequestService;
+        loadWorldInfo = getContext?.()?.loadWorldInfo ?? window.loadWorldInfo;
     } catch (e) {
-        ConnectionManagerRequestService = window.ConnectionManagerRequestService;
+        loadWorldInfo = window.loadWorldInfo;
     }
 
     if (!extension_settings || !getContext || !generateRaw) {
@@ -195,6 +200,53 @@ function getRecentChatText(idx, count) {
         .join("\n");
 }
 
+// 캐릭터 카드에 바인딩된 primary 로어북 이름 (없으면 null)
+function getBoundLorebookName(idx) {
+    const chars = getAllCharacters();
+    const char = chars[idx];
+    if (!char) return null;
+    return char.data?.extensions?.world || char.world || null;
+}
+
+// 로어북을 읽어서, key/comment/content에 킨크 관련 키워드가 있는 항목만 골라 텍스트로 합쳐줌
+// 채팅 로그와 달리 "지금 열려있는 채팅"이 아니어도 됨 - 캐릭터에 바인딩된 로어북 이름만 있으면 어떤 캐릭터든 읽을 수 있음
+async function getLorebookKinkText(idx) {
+    const bookName = getBoundLorebookName(idx);
+    if (!bookName) return { status: "no-book", text: null, bookName: null };
+
+    let data;
+    try {
+        data = await loadWorldInfo(bookName);
+    } catch (e) {
+        console.error(`[${EXT_ID}] 로어북 로드 실패: ${bookName}`, e);
+        return { status: "load-failed", text: null, bookName };
+    }
+
+    const entries = data?.entries ? Object.values(data.entries) : [];
+    if (!entries.length) return { status: "empty", text: null, bookName };
+
+    const matched = entries.filter((entry) => {
+        const haystack = [
+            ...(Array.isArray(entry.key) ? entry.key : []),
+            ...(Array.isArray(entry.keysecondary) ? entry.keysecondary : []),
+            entry.comment || "",
+            entry.content || "",
+        ].join(" ").toLowerCase();
+        return LOREBOOK_KEYWORDS.some((kw) => haystack.includes(kw));
+    });
+
+    if (!matched.length) return { status: "no-match", text: null, bookName };
+
+    const text = matched
+        .map((entry) => {
+            const label = entry.comment || (Array.isArray(entry.key) ? entry.key.join(", ") : "") || "(untitled entry)";
+            return `${label}: ${(entry.content || "").replace(/\s+/g, " ").trim()}`;
+        })
+        .join("\n");
+
+    return { status: "ok", text, bookName, count: matched.length };
+}
+
 // ---------- 파싱/직렬화 ----------
 
 // AI 응답 텍스트(섹션 헤더 + Kink/Reason 쌍)를 items 배열로 파싱
@@ -211,6 +263,8 @@ function parseItemsFromText(text) {
             const headerText = line.replace(/^##\s*/, "").toLowerCase();
             if (headerText.includes("chat")) {
                 currentSection = SECTION_CHAT;
+            } else if (headerText.includes("lorebook") || headerText.includes("lore")) {
+                currentSection = SECTION_LOREBOOK;
             } else if (headerText.includes("infer")) {
                 currentSection = SECTION_INFERRED;
             } else {
@@ -270,34 +324,68 @@ function chatBlock(chatText) {
     return `\n\n--- Recent Chat Log (most recent ${chatText.split("\n").length} messages) ---\n${chatText}\n--- End Chat Log ---`;
 }
 
-// 설정된 연결 프로필이 있으면 그걸로, 없으면 기본 generateRaw로 생성
-// ConnectionManagerRequestService를 쓰면 지금 활성화된 메인 프로필을 건드리지 않고 이 확장만 다른 프로필로 요청을 보낼 수 있음
+// 실제 ST 연결 프로필 <select> DOM을 직접 찾음 - 내부 데이터 구조를 추측하는 것보다 훨씬 안정적
+function findProfileSelectEl() {
+    const candidates = ["#connection_profiles", "select#connection_profiles"];
+    for (const sel of candidates) {
+        const $el = $(sel);
+        if ($el.length) return $el;
+    }
+    return null;
+}
+
+// "분석용 프로필" 방식: 드롭다운에서 골라도 ST의 실제 연결은 그대로 유지되고 analysisProfileId에 저장만 됨.
+// 분석 요청을 보내는 그 순간에만 잠깐 그 프로필로 전환했다가, 끝나면(성공/실패 상관없이) 원래 쓰던 프로필로 자동 복귀함.
 async function generateWithSelectedProfile(prompt) {
     const settings = ensureSettings();
-    const profileId = settings.connectionProfileId;
+    const profileId = settings.analysisProfileId;
 
-    if (!profileId || !ConnectionManagerRequestService) {
+    if (!profileId) {
         return generateRaw(prompt);
     }
 
-    try {
-        const response = await ConnectionManagerRequestService.sendRequest(profileId, prompt, 1000);
-        // 응답 형태가 API마다 조금씩 달라서 흔한 필드들을 순서대로 확인
-        if (typeof response === "string") return response;
-        return response?.content ?? response?.text ?? response?.choices?.[0]?.message?.content ?? "";
-    } catch (e) {
-        console.error(`[${EXT_ID}] 선택된 연결 프로필로 요청 실패, 기본 연결로 재시도`, e);
+    const $select = findProfileSelectEl();
+    if (!$select) {
+        console.warn(`[${EXT_ID}] 연결 프로필 select를 찾지 못해 기본 연결로 진행해`);
         return generateRaw(prompt);
+    }
+
+    const originalValue = $select.val();
+    const needsSwitch = originalValue !== profileId;
+
+    try {
+        if (needsSwitch) {
+            $select.val(profileId).trigger("change");
+            // ST가 프로필 전환을 실제로 적용할 시간을 살짝 줌
+            await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+        return await generateRaw(prompt);
+    } finally {
+        if (needsSwitch && $select.val() !== originalValue) {
+            $select.val(originalValue).trigger("change");
+        }
     }
 }
 
-function buildFullPrompt(sheet, chatText) {
+function lorebookBlock(lorebookText) {
+    if (!lorebookText) return "";
+    return `\n\n--- Lorebook Entries (kink-related) ---\n${lorebookText}\n--- End Lorebook Entries ---`;
+}
+
+function buildFullPrompt(sheet, chatText, lorebookText) {
     const charName = sheet.name || "this character";
     const chatSection = chatText
         ? `\n\n## From Recent Chat (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} demonstrates in the recent chat log]\nReason: [a natural sentence pointing to what happened in the chat log that shows this]\n\nKink: ...\nReason: ...\n`
         : "";
-    const chatNote = chatText
-        ? ` You are also given a recent chat log below — use it as a third source: identify kinks actually demonstrated in that dialogue, separate from what's merely stated in the character sheet.`
+    const lorebookSection = lorebookText
+        ? `\n\n## From Lorebook (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} has, based on the lorebook entries]\nReason: [a natural sentence pointing to which lorebook entry supports this]\n\nKink: ...\nReason: ...\n`
+        : "";
+    const extraSourceNotes = [
+        chatText ? `a recent chat log (identify kinks actually demonstrated in that dialogue)` : null,
+        lorebookText ? `kink-related lorebook entries bound to this character` : null,
+    ].filter(Boolean);
+    const chatNote = extraSourceNotes.length
+        ? ` You are also given ${extraSourceNotes.join(" and ")} below — treat each as its own separate source, distinct from what's merely stated in the character sheet.`
         : "";
 
     return `${commonInstructions(charName)}${chatNote}
@@ -310,30 +398,32 @@ Reason: [a natural sentence explaining which part of the sheet supports this]
 
 Kink: ...
 Reason: ...
-${chatSection}
+${lorebookSection}${chatSection}
 ## AI-Inferred (Expanded)
 Kink: [a natural sentence stating a kink/preference ${charName} has]
 Reason: [a natural sentence explaining why it fits the character's established traits]
 
 Write 3 to 6 entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
 
-${sheetBlock(sheet)}${chatBlock(chatText)}`;
+${sheetBlock(sheet)}${lorebookBlock(lorebookText)}${chatBlock(chatText)}`;
 }
 
-function buildMorePrompt(sheet, existingItems, chatText) {
+function buildMorePrompt(sheet, existingItems, chatText, lorebookText) {
     const existingText = serializeItems(existingItems);
-    return `${buildFullPrompt(sheet, chatText)}
+    return `${buildFullPrompt(sheet, chatText, lorebookText)}
 
 You already produced the following entries earlier. This time, produce new entries that do not overlap with them:
 
 ${existingText}`;
 }
 
-function buildSingleRerollPrompt(sheet, section, existingItems, chatText) {
+function buildSingleRerollPrompt(sheet, section, existingItems, chatText, lorebookText) {
     const charName = sheet.name || "this character";
     const existingText = serializeItems(existingItems);
     const sectionLabel = SECTION_TITLES[section];
-    const relevantChatBlock = section === SECTION_CHAT ? chatBlock(chatText) : "";
+    let relevantExtraBlock = "";
+    if (section === SECTION_CHAT) relevantExtraBlock = chatBlock(chatText);
+    if (section === SECTION_LOREBOOK) relevantExtraBlock = lorebookBlock(lorebookText);
     return `${commonInstructions(charName)}
 
 Produce exactly ONE new entry for the category "${sectionLabel}" that is different from all entries listed below. Respond ONLY in English with exactly these two lines and nothing else:
@@ -344,11 +434,11 @@ Reason: [a natural sentence explaining the basis for it]
 Existing entries to avoid duplicating:
 ${existingText}
 
-${sheetBlock(sheet)}${relevantChatBlock}`;
+${sheetBlock(sheet)}${relevantExtraBlock}`;
 }
 
 // 특정 카테고리 하나만 콕 집어서 추가 항목 생성 (다른 카테고리는 건드리지 않음)
-function buildSectionOnlyPrompt(sheet, section, existingItems, chatText) {
+function buildSectionOnlyPrompt(sheet, section, existingItems, chatText, lorebookText) {
     const charName = sheet.name || "this character";
     const existingText = serializeItems(existingItems);
 
@@ -362,6 +452,9 @@ function buildSectionOnlyPrompt(sheet, section, existingItems, chatText) {
     } else if (section === SECTION_CHAT) {
         instructionBody = `You are given a recent chat log below — identify kinks ${charName} actually demonstrates in that dialogue, separate from what's merely stated in the character sheet.`;
         extraBlock = chatBlock(chatText);
+    } else if (section === SECTION_LOREBOOK) {
+        instructionBody = `You are given kink-related lorebook entries below — identify kinks/preferences ${charName} has based on those entries, separate from what's merely stated in the character sheet's own description/personality/scenario fields.`;
+        extraBlock = lorebookBlock(lorebookText);
     }
 
     return `${commonInstructions(charName)} ${instructionBody}
@@ -395,6 +488,7 @@ function itemMatchesSearch(item, term) {
 const SECTION_BADGES = {
     [SECTION_EXPLICIT]: "📄 Sheet",
     [SECTION_CHAT]: "💬 Chat",
+    [SECTION_LOREBOOK]: "📚 Lore",
     [SECTION_INFERRED]: "🤖 AI",
 };
 
@@ -479,6 +573,8 @@ async function runFullAnalysis(mode) {
 
     const settings = ensureSettings();
     const chatText = getRecentChatText(selectedCharIndex, settings.chatMessageCount);
+    const lorebookResult = await getLorebookKinkText(selectedCharIndex);
+    const lorebookText = lorebookResult.text;
 
     const $btn = mode === "more" ? $("#kink-extractor-more") : $("#kink-extractor-analyze");
     const originalText = $btn.text();
@@ -486,10 +582,10 @@ async function runFullAnalysis(mode) {
 
     try {
         const prompt = mode === "more" && entry.items.length
-            ? buildMorePrompt(sheet, entry.items, chatText)
-            : buildFullPrompt(sheet, chatText);
+            ? buildMorePrompt(sheet, entry.items, chatText, lorebookText)
+            : buildFullPrompt(sheet, chatText, lorebookText);
 
-        const result = await generateRaw(prompt);
+        const result = await generateWithSelectedProfile(prompt);
         const newItems = parseItemsFromText(result);
 
         entry.items = mode === "more" ? [...entry.items, ...newItems] : newItems;
@@ -525,6 +621,19 @@ async function runSectionOnlyAnalysis(section, $btn) {
         return;
     }
 
+    let lorebookText = null;
+    if (section === SECTION_LOREBOOK) {
+        const lorebookResult = await getLorebookKinkText(selectedCharIndex);
+        lorebookText = lorebookResult.text;
+        if (!lorebookText) {
+            const msg = lorebookResult.status === "no-book"
+                ? "This character has no bound lorebook."
+                : "No kink-related entries found in this character's lorebook.";
+            toastr?.warning?.(msg) ?? alert(msg);
+            return;
+        }
+    }
+
     const sheet = getSheetByIndex(selectedCharIndex);
     if (!sheet) return;
 
@@ -532,8 +641,8 @@ async function runSectionOnlyAnalysis(section, $btn) {
     $btn.prop("disabled", true).text("Working...");
 
     try {
-        const prompt = buildSectionOnlyPrompt(sheet, section, entry.items, chatText);
-        const result = await generateRaw(prompt);
+        const prompt = buildSectionOnlyPrompt(sheet, section, entry.items, chatText, lorebookText);
+        const result = await generateWithSelectedProfile(prompt);
         const newItems = parseItemsFromText(result).map((it) => ({ ...it, section }));
 
         entry.items = [...entry.items, ...newItems];
@@ -557,6 +666,10 @@ async function rerollItem(idx) {
 
     const settings = ensureSettings();
     const chatText = getRecentChatText(selectedCharIndex, settings.chatMessageCount);
+    const originalSectionForFetch = entry.items[idx].section;
+    const lorebookText = originalSectionForFetch === SECTION_LOREBOOK
+        ? (await getLorebookKinkText(selectedCharIndex)).text
+        : null;
 
     const $item = $(`.kink-item[data-idx="${idx}"]`);
     const $btn = $item.find(".kink-reroll-btn");
@@ -564,8 +677,8 @@ async function rerollItem(idx) {
 
     try {
         const originalSection = entry.items[idx].section;
-        const prompt = buildSingleRerollPrompt(sheet, originalSection, entry.items, chatText);
-        const result = await generateRaw(prompt);
+        const prompt = buildSingleRerollPrompt(sheet, originalSection, entry.items, chatText, lorebookText);
+        const result = await generateWithSelectedProfile(prompt);
         const parsed = parseItemsFromText(result);
 
         if (parsed.length) {
@@ -708,6 +821,41 @@ function updateChatNote() {
     }
 }
 
+async function updateLorebookNote() {
+    const $note = $("#kink-extractor-lorebook-note");
+    const $lorebookBtn = $("#kink-extractor-more-lorebook");
+
+    if (selectedCharIndex === null) {
+        $note.text("");
+        $lorebookBtn.prop("disabled", true);
+        return;
+    }
+
+    const bookName = getBoundLorebookName(selectedCharIndex);
+    if (!bookName) {
+        $note.text("This character has no bound lorebook.");
+        $lorebookBtn.prop("disabled", true);
+        return;
+    }
+
+    $note.text(`Checking lorebook "${bookName}"...`);
+    const result = await getLorebookKinkText(selectedCharIndex);
+
+    if (result.status === "ok") {
+        $note.text(`Found ${result.count} kink-related entries in "${bookName}".`);
+        $lorebookBtn.prop("disabled", false);
+    } else if (result.status === "no-match") {
+        $note.text(`Bound lorebook "${bookName}" has no kink-related entries.`);
+        $lorebookBtn.prop("disabled", true);
+    } else if (result.status === "load-failed") {
+        $note.text(`Couldn't load lorebook "${bookName}".`);
+        $lorebookBtn.prop("disabled", true);
+    } else {
+        $note.text("");
+        $lorebookBtn.prop("disabled", true);
+    }
+}
+
 function refreshPopupForSelectedCharacter() {
     searchTerm = "";
     $("#kink-extractor-search").val("");
@@ -715,6 +863,7 @@ function refreshPopupForSelectedCharacter() {
     const settings = ensureSettings();
     $("#kink-extractor-chat-count").val(settings.chatMessageCount);
     updateChatNote();
+    updateLorebookNote();
 
     if (selectedCharIndex === null) {
         $("#kink-extractor-adult-confirm").prop("checked", false);
@@ -753,6 +902,8 @@ function buildPopup() {
                     <div id="kink-extractor-chat-note" class="kink-extractor-chat-note"></div>
                 </div>
 
+                <div id="kink-extractor-lorebook-note" class="kink-extractor-chat-note"></div>
+
                 <div class="kink-extractor-buttons">
                     <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
                 </div>
@@ -765,6 +916,7 @@ function buildPopup() {
                     <button id="kink-extractor-more-explicit" class="kink-more-btn" data-section="explicit"><span class="kink-more-icon">📄</span> Sheet suggestions</button>
                     <button id="kink-extractor-more-inferred" class="kink-more-btn" data-section="inferred"><span class="kink-more-icon">🤖</span> AI suggestions</button>
                     <button id="kink-extractor-more-chat" class="kink-more-btn" data-section="chat"><span class="kink-more-icon">💬</span> Chat suggestions</button>
+                    <button id="kink-extractor-more-lorebook" class="kink-more-btn" data-section="lorebook"><span class="kink-more-icon">📚</span> Lorebook suggestions</button>
                     <button id="kink-extractor-more-all" class="kink-more-btn kink-more-btn-all"><span class="kink-more-icon">🔀</span> All suggestions</button>
                 </div>
 
@@ -815,6 +967,9 @@ function buildPopup() {
     $("#kink-extractor-more-chat").on("click", function () {
         runSectionOnlyAnalysis(SECTION_CHAT, $(this));
     });
+    $("#kink-extractor-more-lorebook").on("click", function () {
+        runSectionOnlyAnalysis(SECTION_LOREBOOK, $(this));
+    });
     $("#kink-extractor-more-all").on("click", () => runFullAnalysis("more"));
 
     $("#kink-extractor-reset").on("click", function () {
@@ -863,22 +1018,30 @@ function closePopup() {
     }
 }
 
-// 확장탭(#extensions_settings2)에 연결 프로필 선택용 작은 설정 패널을 별도로 추가
-// 여기서 고른 프로필은 이 확장의 모든 생성 요청(Analyze/추가 제안/리롤)에만 적용되고, ST의 메인 연결에는 영향 없음
+// 확장탭(#extensions_settings2)에 "분석용 프로필" 선택 패널을 별도로 추가
+// 여기서 골라도 ST의 실제 연결은 그대로 유지되고, Analyze/추가 제안/리롤을 실행하는 그 순간에만 잠깐 전환됐다가 끝나면 자동으로 원래 프로필로 복귀함
 function populateProfileSelect() {
     const $select = $("#kink-extractor-profile-select");
     if (!$select.length) return;
 
     const settings = ensureSettings();
-    const profiles = getContext?.()?.extensionSettings?.connectionManager?.profiles ?? [];
+    const $sourceSelect = findProfileSelectEl();
 
     $select.empty();
-    $select.append(`<option value="">(Use ST's active connection)</option>`);
-    profiles.forEach((p) => {
-        $select.append(`<option value="${p.id}">${escapeHtml(p.name || p.id)}</option>`);
-    });
+    $select.append(`<option value="">(Don't switch - use whatever's active)</option>`);
 
-    $select.val(settings.connectionProfileId || "");
+    if ($sourceSelect && $sourceSelect.length) {
+        $sourceSelect.find("option").each(function () {
+            const val = $(this).val();
+            const label = $(this).text().trim();
+            if (!val) return;
+            $select.append(`<option value="${escapeHtml(val)}">${escapeHtml(label)}</option>`);
+        });
+    } else {
+        $select.append(`<option value="" disabled>(Couldn't find ST's profile list)</option>`);
+    }
+
+    $select.val(settings.analysisProfileId || "");
 }
 
 function buildExtensionsTabPanel() {
@@ -892,7 +1055,7 @@ function buildExtensionsTabPanel() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <label class="kink-extractor-label" for="kink-extractor-profile-select">Connection Profile</label>
+                <label class="kink-extractor-label" for="kink-extractor-profile-select">Analysis Profile (only switches while analyzing)</label>
                 <select id="kink-extractor-profile-select" class="kink-extractor-char-select"></select>
             </div>
         </div>
@@ -903,7 +1066,7 @@ function buildExtensionsTabPanel() {
 
     $("#kink-extractor-profile-select").on("change", function () {
         const settings = ensureSettings();
-        settings.connectionProfileId = $(this).val() || null;
+        settings.analysisProfileId = $(this).val() || null;
         saveSettingsDebounced?.();
     });
 }
