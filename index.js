@@ -39,8 +39,13 @@ const LOREBOOK_KEYWORDS = [
 ];
 
 const defaultSettings = {
-    perCharacter: {}, // key: 캐릭터 고유 키 -> { isAdultConfirmed, items: [{section, kink, reason}] }
-    chatMessageCount: 0, // 분석에 반영할 최근 채팅 메시지 개수 (0 = 반영 안 함), 전역 설정
+    perCharacter: {},
+    chatMessageCount: 0,
+    outputLanguage: "English",
+    itemCount: 5,
+    customPrompt: "",
+    analysisProfileId: null,
+    analyzeSources: { sheet: true, chat: true, lorebook: true, inferred: true },
 };
 
 let extension_settings, getContext, generateRaw, saveSettingsDebounced, loadWorldInfo;
@@ -85,13 +90,14 @@ function ensureSettings() {
     if (!extension_settings[EXT_ID]) {
         extension_settings[EXT_ID] = structuredClone(defaultSettings);
     }
-    if (!extension_settings[EXT_ID].perCharacter) {
-        extension_settings[EXT_ID].perCharacter = {};
-    }
-    if (typeof extension_settings[EXT_ID].chatMessageCount !== "number") {
-        extension_settings[EXT_ID].chatMessageCount = 0;
-    }
-    return extension_settings[EXT_ID];
+    const s = extension_settings[EXT_ID];
+    if (!s.perCharacter) s.perCharacter = {};
+    if (typeof s.chatMessageCount !== "number") s.chatMessageCount = 0;
+    if (!s.outputLanguage) s.outputLanguage = "English";
+    if (typeof s.itemCount !== "number" || s.itemCount < 1) s.itemCount = 5;
+    if (typeof s.customPrompt !== "string") s.customPrompt = "";
+    if (!s.analyzeSources) s.analyzeSources = { sheet: true, chat: true, lorebook: true, inferred: true };
+    return s;
 }
 
 function getAllCharacters() {
@@ -388,8 +394,12 @@ Example dialogue: ${sheet.mes_example}
 }
 
 function commonInstructions(charName) {
+    const settings = ensureSettings();
+    const lang = settings.outputLanguage || "English";
+    const customNote = settings.customPrompt ? `\n\nAdditional user instructions: ${settings.customPrompt}` : "";
     return `You are an assistant that analyzes adult roleplay character sheets. This task is strictly limited to characters who are adults (18+ years old).
-State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").`;
+State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").
+Respond ONLY in ${lang}.${customNote}`;
 }
 
 function chatBlock(chatText) {
@@ -445,38 +455,39 @@ function lorebookBlock(lorebookText) {
     return `\n\n--- Lorebook Entries (kink-related) ---\n${lorebookText}\n--- End Lorebook Entries ---`;
 }
 
-function buildFullPrompt(sheet, chatText, lorebookText) {
+function buildFullPrompt(sheet, chatText, lorebookText, sourcesOverride) {
+    const settings = ensureSettings();
     const charName = sheet.name || "this character";
-    const chatSection = chatText
-        ? `\n\n## From Recent Chat (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} demonstrates in the recent chat log]\nReason: [a natural sentence pointing to what happened in the chat log that shows this]\n\nKink: ...\nReason: ...\n`
-        : "";
-    const lorebookSection = lorebookText
-        ? `\n\n## From Lorebook (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} has, based on the lorebook entries]\nReason: [a natural sentence pointing to which lorebook entry supports this]\n\nKink: ...\nReason: ...\n`
-        : "";
-    const extraSourceNotes = [
-        chatText ? `a recent chat log (identify kinks actually demonstrated in that dialogue)` : null,
-        lorebookText ? `kink-related lorebook entries bound to this character` : null,
-    ].filter(Boolean);
+    const sources = sourcesOverride || settings.analyzeSources;
+    const count = settings.itemCount || 5;
+
+    const sections = [];
+    const extraSourceNotes = [];
+
+    if (sources.sheet) {
+        sections.push(`\n## From Character Sheet (Explicit)\nKink: [a natural sentence stating the kink/preference ${charName} has]\nReason: [a natural sentence explaining which part of the sheet supports this]\n\nKink: ...\nReason: ...\n`);
+    }
+    if (sources.lorebook && lorebookText) {
+        sections.push(`\n## From Lorebook (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} has, based on the lorebook entries]\nReason: [a natural sentence pointing to which lorebook entry supports this]\n\nKink: ...\nReason: ...\n`);
+        extraSourceNotes.push(`kink-related lorebook entries bound to this character`);
+    }
+    if (sources.chat && chatText) {
+        sections.push(`\n## From Recent Chat (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} demonstrates in the recent chat log]\nReason: [a natural sentence pointing to what happened in the chat log that shows this]\n\nKink: ...\nReason: ...\n`);
+        extraSourceNotes.push(`a recent chat log (identify kinks actually demonstrated in that dialogue)`);
+    }
+    if (sources.inferred) {
+        sections.push(`\n## AI-Inferred (Expanded)\nKink: [a natural sentence stating a kink/preference ${charName} has]\nReason: [a natural sentence explaining why it fits the character's established traits]\n`);
+    }
+
     const chatNote = extraSourceNotes.length
         ? ` You are also given ${extraSourceNotes.join(" and ")} below — treat each as its own separate source, distinct from what's merely stated in the character sheet.`
         : "";
 
     return `${commonInstructions(charName)}${chatNote}
 
-Respond ONLY in English, in the exact plain-text format below. Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences.
-
-## From Character Sheet (Explicit)
-Kink: [a natural sentence stating the kink/preference ${charName} has]
-Reason: [a natural sentence explaining which part of the sheet supports this]
-
-Kink: ...
-Reason: ...
-${lorebookSection}${chatSection}
-## AI-Inferred (Expanded)
-Kink: [a natural sentence stating a kink/preference ${charName} has]
-Reason: [a natural sentence explaining why it fits the character's established traits]
-
-Write 3 to 6 entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
+Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences. Use the exact plain-text format below.
+${sections.join("")}
+Write ${count} entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
 
 ${sheetBlock(sheet)}${lorebookBlock(lorebookText)}${chatBlock(chatText)}`;
 }
@@ -499,7 +510,7 @@ function buildSingleRerollPrompt(sheet, section, existingItems, chatText, lorebo
     if (section === SECTION_LOREBOOK) relevantExtraBlock = lorebookBlock(lorebookText);
     return `${commonInstructions(charName)}
 
-Produce exactly ONE new entry for the category "${sectionLabel}" that is different from all entries listed below. Respond ONLY in English with exactly these two lines and nothing else:
+Produce exactly ONE new entry for the category "${sectionLabel}" that is different from all entries listed below. Output exactly these two lines and nothing else:
 
 Kink: [a natural sentence stating the kink/preference ${charName} has]
 Reason: [a natural sentence explaining the basis for it]
@@ -532,7 +543,7 @@ function buildSectionOnlyPrompt(sheet, section, existingItems, chatText, loreboo
 
     return `${commonInstructions(charName)} ${instructionBody}
 
-Respond ONLY in English, in the exact plain-text format below.
+Use the exact plain-text format below.
 
 ## ${SECTION_TITLES[section]}
 Kink: [a natural sentence stating the kink/preference ${charName} has]
@@ -541,7 +552,7 @@ Reason: [a natural sentence explaining the basis for it]
 Kink: ...
 Reason: ...
 
-Write 3 to 6 entries. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks. Do not repeat any of these existing entries:
+Write ${ensureSettings().itemCount || 5} entries. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks. Do not repeat any of these existing entries:
 ${existingText}
 
 ${sheetBlock(sheet)}${extraBlock}`;
@@ -597,6 +608,7 @@ function renderResult(items) {
                     <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁 Reroll</button>
                     <button class="kink-copy-btn" data-idx="${it.idx}" title="Copy just the Kink line">📋 Copy Kink</button>
                     <button class="kink-inject-btn" data-idx="${it.idx}" title="Add to CardInject's Kink category">➕ To CardInject</button>
+                    <button class="kink-delete-btn" data-idx="${it.idx}" title="Delete this entry">🗑</button>
                 </div>
             </div>`;
         }
@@ -622,6 +634,11 @@ function renderResult(items) {
     $out.find(".kink-inject-btn").on("click", function () {
         const idx = Number($(this).data("idx"));
         injectKinkToCardInject(idx, $(this));
+    });
+
+    $out.find(".kink-delete-btn").on("click", function () {
+        const idx = Number($(this).data("idx"));
+        deleteItem(idx);
     });
 }
 
@@ -767,6 +784,15 @@ async function rerollItem(idx) {
         toastr?.error?.("Reroll failed. Check the console.") ?? alert("Reroll failed.");
         $btn.prop("disabled", false).text("🔁 Reroll");
     }
+}
+
+function deleteItem(idx) {
+    if (selectedCharIndex === null) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry || !entry.items[idx]) return;
+    entry.items.splice(idx, 1);
+    saveSettingsDebounced?.();
+    renderResult(entry.items);
 }
 
 function injectKinkToCardInject(idx, $btn) {
@@ -941,6 +967,13 @@ function refreshPopupForSelectedCharacter() {
 
     const settings = ensureSettings();
     $("#kink-extractor-chat-count").val(settings.chatMessageCount);
+    $("#kink-extractor-language").val(settings.outputLanguage);
+    $("#kink-extractor-item-count").val(settings.itemCount);
+    $("#kink-extractor-custom-prompt").val(settings.customPrompt);
+    $("#kink-src-sheet").prop("checked", settings.analyzeSources.sheet);
+    $("#kink-src-chat").prop("checked", settings.analyzeSources.chat);
+    $("#kink-src-lorebook").prop("checked", settings.analyzeSources.lorebook);
+    $("#kink-src-inferred").prop("checked", settings.analyzeSources.inferred);
     updateChatNote();
     updateLorebookNote();
 
@@ -982,6 +1015,35 @@ function buildPopup() {
                 </div>
 
                 <div id="kink-extractor-lorebook-note" class="kink-extractor-chat-note"></div>
+
+                <div class="kink-extractor-settings-row">
+                    <div class="kink-extractor-setting-half">
+                        <label class="kink-extractor-label" for="kink-extractor-language">Output language</label>
+                        <select id="kink-extractor-language" class="kink-extractor-char-select">
+                            <option value="English">English</option>
+                            <option value="Korean">한국어</option>
+                        </select>
+                    </div>
+                    <div class="kink-extractor-setting-half">
+                        <label class="kink-extractor-label" for="kink-extractor-item-count">Items per section</label>
+                        <input id="kink-extractor-item-count" class="kink-extractor-chat-count" type="number" min="1" max="10" step="1">
+                    </div>
+                </div>
+
+                <div class="kink-extractor-custom-prompt-wrap">
+                    <label class="kink-extractor-label" for="kink-extractor-custom-prompt">Custom instructions (optional)</label>
+                    <textarea id="kink-extractor-custom-prompt" class="kink-extractor-custom-prompt" rows="2" placeholder="e.g. This character is in a fantasy world..."></textarea>
+                </div>
+
+                <div class="kink-extractor-sources-wrap">
+                    <label class="kink-extractor-label">Sources to analyze</label>
+                    <div class="kink-extractor-sources-row">
+                        <label class="kink-extractor-source-check"><input type="checkbox" id="kink-src-sheet" checked> 📄 Sheet</label>
+                        <label class="kink-extractor-source-check"><input type="checkbox" id="kink-src-chat" checked> 💬 Chat</label>
+                        <label class="kink-extractor-source-check"><input type="checkbox" id="kink-src-lorebook" checked> 📚 Lore</label>
+                        <label class="kink-extractor-source-check"><input type="checkbox" id="kink-src-inferred" checked> 🤖 AI</label>
+                    </div>
+                </div>
 
                 <div class="kink-extractor-buttons">
                     <button id="kink-extractor-analyze" class="menu_button primary">Analyze</button>
@@ -1033,6 +1095,35 @@ function buildPopup() {
         settings.chatMessageCount = val;
         saveSettingsDebounced?.();
         updateChatNote();
+    });
+
+    $("#kink-extractor-language").on("change", function () {
+        const settings = ensureSettings();
+        settings.outputLanguage = $(this).val();
+        saveSettingsDebounced?.();
+    });
+
+    $("#kink-extractor-item-count").on("change input", function () {
+        const settings = ensureSettings();
+        settings.itemCount = Math.max(1, Math.min(10, Number($(this).val()) || 5));
+        saveSettingsDebounced?.();
+    });
+
+    $("#kink-extractor-custom-prompt").on("change", function () {
+        const settings = ensureSettings();
+        settings.customPrompt = $(this).val().trim();
+        saveSettingsDebounced?.();
+    });
+
+    $("#kink-src-sheet, #kink-src-chat, #kink-src-lorebook, #kink-src-inferred").on("change", function () {
+        const settings = ensureSettings();
+        settings.analyzeSources = {
+            sheet: $("#kink-src-sheet").is(":checked"),
+            chat: $("#kink-src-chat").is(":checked"),
+            lorebook: $("#kink-src-lorebook").is(":checked"),
+            inferred: $("#kink-src-inferred").is(":checked"),
+        };
+        saveSettingsDebounced?.();
     });
 
     $("#kink-extractor-analyze").on("click", () => runFullAnalysis("analyze"));

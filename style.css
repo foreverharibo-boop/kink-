@@ -432,3 +432,89 @@
 .kink-extractor-reset-btn:hover {
     background-color: #fbf2f0 !important;
 }
+
+/* 새 설정 영역 */
+.kink-extractor-settings-row {
+    display: flex;
+    gap: 10px;
+    margin: 10px 0 4px;
+}
+
+.kink-extractor-setting-half {
+    flex: 1;
+}
+
+.kink-extractor-setting-half select,
+.kink-extractor-setting-half input {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #e3e0da;
+    background-color: #faf9f7 !important;
+    color: #2b2b2e !important;
+    font-size: 13px;
+}
+
+.kink-extractor-custom-prompt-wrap {
+    margin: 10px 0 4px;
+}
+
+.kink-extractor-custom-prompt {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #e3e0da;
+    background-color: #faf9f7 !important;
+    color: #2b2b2e !important;
+    font-size: 12.5px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 40px;
+}
+
+.kink-extractor-custom-prompt::placeholder {
+    color: #b3afa5;
+}
+
+.kink-extractor-sources-wrap {
+    margin: 10px 0 4px;
+}
+
+.kink-extractor-sources-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.kink-extractor-source-check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #2b2b2e !important;
+    font-size: 12.5px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.kink-extractor-source-check input[type="checkbox"] {
+    accent-color: #6b6862;
+    width: 14px;
+    height: 14px;
+}
+
+.kink-delete-btn {
+    margin-top: 0;
+    background-color: #ffffff !important;
+    border: 1px solid #e3e0da !important;
+    color: #b3756c !important;
+    padding: 4px 9px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+
+.kink-delete-btn:hover {
+    background-color: #fdf0ee !important;
+}
