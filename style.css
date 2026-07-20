@@ -518,3 +518,19 @@
 .kink-delete-btn:hover {
     background-color: #fdf0ee !important;
 }
+
+.kink-extractor-char-search {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #e3e0da;
+    background-color: #faf9f7 !important;
+    color: #2b2b2e !important;
+    font-size: 12.5px;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+}
+
+.kink-extractor-char-search::placeholder {
+    color: #b3afa5;
+}

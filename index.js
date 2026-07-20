@@ -685,7 +685,22 @@ async function runFullAnalysis(mode) {
             : buildFullPrompt(sheet, chatText, lorebookText);
 
         const result = await generateWithSelectedProfile(prompt);
-        const newItems = parseItemsFromText(result);
+        let newItems = parseItemsFromText(result);
+
+        // AI가 지시를 무시하고 체크 안 된 소스의 섹션을 만들어버리는 경우 → 강제로 필터링/재태깅
+        const allowedSections = [];
+        if (sources.sheet) allowedSections.push(SECTION_EXPLICIT);
+        if (sources.chat) allowedSections.push(SECTION_CHAT);
+        if (sources.lorebook) allowedSections.push(SECTION_LOREBOOK);
+        if (sources.inferred) allowedSections.push(SECTION_INFERRED);
+
+        if (allowedSections.length === 1) {
+            // 소스가 하나만 체크된 경우: AI가 잘못된 섹션 헤더를 쓴 것이므로 전부 그 소스로 재태깅
+            newItems = newItems.map((it) => ({ ...it, section: allowedSections[0] }));
+        } else if (allowedSections.length > 1) {
+            // 여러 소스 체크된 경우: 허용 안 된 섹션의 항목만 걸러냄
+            newItems = newItems.filter((it) => allowedSections.includes(it.section));
+        }
 
         entry.items = mode === "more" ? [...entry.items, ...newItems] : newItems;
         saveSettingsDebounced?.();
@@ -897,15 +912,25 @@ function populateCharacterSelect() {
     const context = getContext();
     const chars = getAllCharacters();
     const $select = $("#kink-extractor-char-select");
+    const searchVal = ($("#kink-extractor-char-search").val() || "").toLowerCase();
     $select.empty();
 
     chars.forEach((char, idx) => {
-        $select.append(`<option value="${idx}">${escapeHtml(char.name || "(unnamed)")}</option>`);
+        const name = char.name || "(unnamed)";
+        if (searchVal && !name.toLowerCase().includes(searchVal)) return;
+        $select.append(`<option value="${idx}">${escapeHtml(name)}</option>`);
     });
 
-    const defaultIdx = context.characterId !== undefined && chars[context.characterId] ? context.characterId : 0;
-    selectedCharIndex = chars.length ? defaultIdx : null;
-    $select.val(selectedCharIndex);
+    // 검색 결과가 있으면 첫 번째를 선택, 없으면 null
+    if ($select.find("option").length) {
+        const defaultIdx = context.characterId !== undefined && chars[context.characterId]
+            && (!searchVal || (chars[context.characterId].name || "").toLowerCase().includes(searchVal))
+            ? context.characterId : Number($select.find("option:first").val());
+        selectedCharIndex = defaultIdx;
+        $select.val(selectedCharIndex);
+    } else {
+        selectedCharIndex = null;
+    }
 }
 
 function updateChatNote() {
@@ -1009,6 +1034,7 @@ function buildPopup() {
             <div class="kink-extractor-popup-body">
                 <div class="kink-extractor-char-select-wrap">
                     <label class="kink-extractor-label">Character</label>
+                    <input id="kink-extractor-char-search" class="kink-extractor-char-search" type="text" placeholder="Search characters...">
                     <select id="kink-extractor-char-select" class="kink-extractor-char-select"></select>
                 </div>
 
@@ -1084,6 +1110,11 @@ function buildPopup() {
 
     // MovingUI의 body transform 때문에 position:fixed가 깨지는 문제 회피 -> documentElement에 부착
     $(document.documentElement).append(html);
+
+    $("#kink-extractor-char-search").on("input", function () {
+        populateCharacterSelect();
+        refreshPopupForSelectedCharacter();
+    });
 
     $("#kink-extractor-char-select").on("change", function () {
         selectedCharIndex = Number($(this).val());
@@ -1177,6 +1208,10 @@ function buildPopup() {
 
 function openPopup() {
     buildPopup();
+    $("#kink-extractor-char-search").val("");
+    const settings = ensureSettings();
+    settings.customPrompt = "";
+    saveSettingsDebounced?.();
     populateCharacterSelect();
     refreshPopupForSelectedCharacter();
 
