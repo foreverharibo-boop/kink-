@@ -608,15 +608,26 @@ function renderResult(items) {
         anyVisible = true;
         html += `<div class="section-title">${escapeHtml(SECTION_TITLES[sectionKey])}</div>`;
         for (const it of visibleGroup) {
+            const hasTranslation = it.translatedKink && it.translatedReason;
+            const translatedBlock = hasTranslation
+                ? `<div class="kink-translated-block">
+                    <p class="prose-line"><span class="field-label">Kink (translated):</span> ${escapeHtml(it.translatedKink)}</p>
+                    <p class="prose-line"><span class="field-label">Reason (translated):</span> ${escapeHtml(it.translatedReason)}</p>
+                   </div>`
+                : "";
+
             html += `
             <div class="kink-item" data-idx="${it.idx}">
                 <span class="kink-source-badge kink-source-${sectionKey}">${escapeHtml(SECTION_BADGES[sectionKey])}</span>
                 <p class="prose-line"><span class="field-label">Kink:</span> ${escapeHtml(it.kink)}</p>
                 <p class="prose-line"><span class="field-label">Reason:</span> ${escapeHtml(it.reason)}</p>
+                ${translatedBlock}
                 <div class="kink-item-actions">
-                    <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁 Reroll</button>
-                    <button class="kink-copy-btn" data-idx="${it.idx}" title="Copy just the Kink line">📋 Copy Kink</button>
-                    <button class="kink-inject-btn" data-idx="${it.idx}" title="Add to CardInject's Kink category">➕ To CardInject</button>
+                    <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁</button>
+                    <button class="kink-copy-btn" data-idx="${it.idx}" title="Copy just the Kink line">📋</button>
+                    <button class="kink-translate-btn" data-idx="${it.idx}" title="Translate this entry">🌐</button>
+                    <button class="kink-inject-btn" data-idx="${it.idx}" data-mode="original" title="Insert original to CardInject">➕ 원문삽입</button>
+                    ${hasTranslation ? `<button class="kink-inject-btn" data-idx="${it.idx}" data-mode="translated" title="Insert translated to CardInject">➕ 번역삽입</button>` : ""}
                     <button class="kink-delete-btn" data-idx="${it.idx}" title="Delete this entry">🗑</button>
                 </div>
             </div>`;
@@ -640,9 +651,15 @@ function renderResult(items) {
         copyKinkOnly(idx, $(this));
     });
 
+    $out.find(".kink-translate-btn").on("click", function () {
+        const idx = Number($(this).data("idx"));
+        translateItem(idx, $(this));
+    });
+
     $out.find(".kink-inject-btn").on("click", function () {
         const idx = Number($(this).data("idx"));
-        injectKinkToCardInject(idx, $(this));
+        const mode = $(this).data("mode");
+        injectKinkToCardInject(idx, $(this), mode);
     });
 
     $out.find(".kink-delete-btn").on("click", function () {
@@ -819,13 +836,54 @@ function deleteItem(idx) {
     renderResult(entry.items);
 }
 
-function injectKinkToCardInject(idx, $btn) {
+async function translateItem(idx, $btn) {
     if (selectedCharIndex === null) return;
     const entry = getEntryByIndex(selectedCharIndex);
     if (!entry || !entry.items[idx]) return;
 
+    const item = entry.items[idx];
+    const settings = ensureSettings();
+    const currentLang = settings.outputLanguage || "English";
+    const targetLang = currentLang === "Korean" ? "English" : "Korean";
+
     const originalText = $btn.text();
-    const result = addKinkToCardInject(selectedCharIndex, entry.items[idx].kink);
+    $btn.prop("disabled", true).text("...");
+
+    try {
+        const prompt = `Translate the following two lines into ${targetLang}. Output ONLY the translated lines in the exact same format (Kink: ... and Reason: ...), nothing else.
+
+Kink: ${item.kink}
+Reason: ${item.reason}`;
+
+        const result = await generateWithSelectedProfile(prompt);
+        const kinkMatch = result.match(/^kink\s*[:：]\s*(.*)$/im);
+        const reasonMatch = result.match(/^reason\s*[:：]\s*(.*)$/im);
+
+        if (kinkMatch && reasonMatch) {
+            item.translatedKink = kinkMatch[1].trim();
+            item.translatedReason = reasonMatch[1].trim();
+            saveSettingsDebounced?.();
+            renderResult(entry.items);
+        } else {
+            toastr?.warning?.("Translation parsing failed.") ?? alert("Translation parsing failed.");
+            $btn.prop("disabled", false).text(originalText);
+        }
+    } catch (e) {
+        console.error(`[${EXT_ID}] 번역 실패`, e);
+        toastr?.error?.("Translation failed.") ?? alert("Translation failed.");
+        $btn.prop("disabled", false).text(originalText);
+    }
+}
+
+function injectKinkToCardInject(idx, $btn, mode) {
+    if (selectedCharIndex === null) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry || !entry.items[idx]) return;
+
+    const item = entry.items[idx];
+    const kinkText = (mode === "translated" && item.translatedKink) ? item.translatedKink : item.kink;
+    const originalText = $btn.text();
+    const result = addKinkToCardInject(selectedCharIndex, kinkText);
 
     if (result === "added") {
         $btn.text("Added!");

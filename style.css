@@ -534,3 +534,40 @@
 .kink-extractor-char-search::placeholder {
     color: #b3afa5;
 }
+
+.kink-translated-block {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background-color: #f5f3ef !important;
+    border-left: 3px solid #d5d0c8;
+}
+
+.kink-translated-block .prose-line {
+    color: #3a382f !important;
+    font-size: 12.5px;
+}
+
+.kink-translated-block .field-label {
+    color: #6b6862 !important;
+}
+
+.kink-translate-btn {
+    margin-top: 0;
+    background-color: #ffffff !important;
+    border: 1px solid #e3e0da !important;
+    color: #57544c !important;
+    padding: 4px 9px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+
+.kink-translate-btn:hover {
+    background-color: #f0eee9 !important;
+}
+
+.kink-translate-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
