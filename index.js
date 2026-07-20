@@ -43,6 +43,7 @@ const defaultSettings = {
     chatMessageCount: 0,
     outputLanguage: "English",
     itemCount: 5,
+    detailLevel: "normal",         // brief / normal / detailed
     customPrompt: "",
     analysisProfileId: null,
     analyzeSources: { sheet: true, chat: true, lorebook: true, inferred: true },
@@ -95,6 +96,7 @@ function ensureSettings() {
     if (typeof s.chatMessageCount !== "number") s.chatMessageCount = 0;
     if (!s.outputLanguage) s.outputLanguage = "English";
     if (typeof s.itemCount !== "number" || s.itemCount < 1) s.itemCount = 5;
+    if (!["brief", "normal", "detailed"].includes(s.detailLevel)) s.detailLevel = "normal";
     if (typeof s.customPrompt !== "string") s.customPrompt = "";
     if (!s.analyzeSources) s.analyzeSources = { sheet: true, chat: true, lorebook: true, inferred: true };
     return s;
@@ -397,9 +399,18 @@ function commonInstructions(charName) {
     const settings = ensureSettings();
     const lang = settings.outputLanguage || "English";
     const customNote = settings.customPrompt ? `\n\nAdditional user instructions: ${settings.customPrompt}` : "";
+
+    const detailInstructions = {
+        brief: "Keep each Kink and Reason line very short — one concise sentence each, no elaboration.",
+        normal: "",
+        detailed: "Write each Kink and Reason line in rich detail — 2 to 3 sentences each, with thorough explanation and nuance.",
+    };
+    const detailNote = detailInstructions[settings.detailLevel] || "";
+    const detailLine = detailNote ? `\n${detailNote}` : "";
+
     return `You are an assistant that analyzes adult roleplay character sheets. This task is strictly limited to characters who are adults (18+ years old).
 State everything as a fact the character already possesses — never phrase it as a suggestion, proposal, or recommendation. Do NOT use words like "suggest", "recommend", "propose". Always phrase the Kink line so it ends with a statement of possession (e.g. "${charName} has a strong desire for ...", "${charName} possesses a kink for ...").
-Respond ONLY in ${lang}.${customNote}`;
+Respond ONLY in ${lang}.${detailLine}${customNote}`;
 }
 
 function chatBlock(chatText) {
@@ -1060,6 +1071,7 @@ function refreshPopupForSelectedCharacter() {
     const settings = ensureSettings();
     $("#kink-extractor-chat-count").val(settings.chatMessageCount);
     $("#kink-extractor-language").val(settings.outputLanguage);
+    $("#kink-extractor-detail").val(settings.detailLevel);
     $("#kink-extractor-item-count").val(settings.itemCount);
     $("#kink-extractor-custom-prompt").val(settings.customPrompt);
     $("#kink-src-sheet").prop("checked", settings.analyzeSources.sheet);
@@ -1111,14 +1123,22 @@ function buildPopup() {
 
                 <div class="kink-extractor-settings-row">
                     <div class="kink-extractor-setting-half">
-                        <label class="kink-extractor-label" for="kink-extractor-language">Output language</label>
+                        <label class="kink-extractor-label" for="kink-extractor-language">Language</label>
                         <select id="kink-extractor-language" class="kink-extractor-char-select">
                             <option value="English">English</option>
                             <option value="Korean">한국어</option>
                         </select>
                     </div>
                     <div class="kink-extractor-setting-half">
-                        <label class="kink-extractor-label" for="kink-extractor-item-count">Items per section</label>
+                        <label class="kink-extractor-label" for="kink-extractor-detail">Detail</label>
+                        <select id="kink-extractor-detail" class="kink-extractor-char-select">
+                            <option value="brief">간결</option>
+                            <option value="normal">보통</option>
+                            <option value="detailed">상세</option>
+                        </select>
+                    </div>
+                    <div class="kink-extractor-setting-half">
+                        <label class="kink-extractor-label" for="kink-extractor-item-count">Items</label>
                         <input id="kink-extractor-item-count" class="kink-extractor-chat-count" type="number" min="1" max="10" step="1">
                     </div>
                 </div>
@@ -1198,6 +1218,12 @@ function buildPopup() {
     $("#kink-extractor-language").on("change", function () {
         const settings = ensureSettings();
         settings.outputLanguage = $(this).val();
+        saveSettingsDebounced?.();
+    });
+
+    $("#kink-extractor-detail").on("change", function () {
+        const settings = ensureSettings();
+        settings.detailLevel = $(this).val();
         saveSettingsDebounced?.();
     });
 

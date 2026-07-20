@@ -438,10 +438,13 @@
     display: flex;
     gap: 10px;
     margin: 10px 0 4px;
+    align-items: flex-end;
 }
 
 .kink-extractor-setting-half {
     flex: 1;
+    display: flex;
+    flex-direction: column;
 }
 
 .kink-extractor-setting-half select,
@@ -453,6 +456,8 @@
     background-color: #faf9f7 !important;
     color: #2b2b2e !important;
     font-size: 13px;
+    height: 38px;
+    box-sizing: border-box;
 }
 
 .kink-extractor-custom-prompt-wrap {
