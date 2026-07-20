@@ -462,7 +462,13 @@ function buildFullPrompt(sheet, chatText, lorebookText, sourcesOverride) {
     const count = settings.itemCount || 5;
 
     const sections = [];
+    const dataBlocks = [];
     const extraSourceNotes = [];
+
+    // 캐시트 데이터는 sheet 또는 inferred가 켜져있을 때만 포함 (AI 추론도 캐릭터 정보가 있어야 가능하므로)
+    if (sources.sheet || sources.inferred) {
+        dataBlocks.push(sheetBlock(sheet));
+    }
 
     if (sources.sheet) {
         sections.push(`\n## From Character Sheet (Explicit)\nKink: [a natural sentence stating the kink/preference ${charName} has]\nReason: [a natural sentence explaining which part of the sheet supports this]\n\nKink: ...\nReason: ...\n`);
@@ -470,10 +476,12 @@ function buildFullPrompt(sheet, chatText, lorebookText, sourcesOverride) {
     if (sources.lorebook && lorebookText) {
         sections.push(`\n## From Lorebook (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} has, based on the lorebook entries]\nReason: [a natural sentence pointing to which lorebook entry supports this]\n\nKink: ...\nReason: ...\n`);
         extraSourceNotes.push(`kink-related lorebook entries bound to this character`);
+        dataBlocks.push(lorebookBlock(lorebookText));
     }
     if (sources.chat && chatText) {
         sections.push(`\n## From Recent Chat (Observed)\nKink: [a natural sentence stating a kink/preference ${charName} demonstrates in the recent chat log]\nReason: [a natural sentence pointing to what happened in the chat log that shows this]\n\nKink: ...\nReason: ...\n`);
         extraSourceNotes.push(`a recent chat log (identify kinks actually demonstrated in that dialogue)`);
+        dataBlocks.push(chatBlock(chatText));
     }
     if (sources.inferred) {
         sections.push(`\n## AI-Inferred (Expanded)\nKink: [a natural sentence stating a kink/preference ${charName} has]\nReason: [a natural sentence explaining why it fits the character's established traits]\n`);
@@ -488,8 +496,9 @@ function buildFullPrompt(sheet, chatText, lorebookText, sourcesOverride) {
 Each entry is a pair of "Kink" and "Reason" lines, written as complete, natural sentences. Use the exact plain-text format below.
 ${sections.join("")}
 Write ${count} entries per section. Do not use hyphens or bullet symbols, only the "Kink:" and "Reason:" labels. Output plain text only, no JSON, no code blocks.
+IMPORTANT: ONLY produce the sections shown above. Do NOT add any other sections.
 
-${sheetBlock(sheet)}${lorebookBlock(lorebookText)}${chatBlock(chatText)}`;
+${dataBlocks.join("")}`;
 }
 
 function buildMorePrompt(sheet, existingItems, chatText, lorebookText) {
@@ -662,9 +671,9 @@ async function runFullAnalysis(mode) {
     if (!sheet) return;
 
     const settings = ensureSettings();
-    const chatText = getRecentChatText(selectedCharIndex, settings.chatMessageCount);
-    const lorebookResult = await getLorebookKinkText(selectedCharIndex);
-    const lorebookText = lorebookResult.text;
+    const sources = settings.analyzeSources;
+    const chatText = sources.chat ? getRecentChatText(selectedCharIndex, settings.chatMessageCount) : null;
+    const lorebookText = sources.lorebook ? (await getLorebookKinkText(selectedCharIndex)).text : null;
 
     const $btn = mode === "more" ? $("#kink-extractor-more") : $("#kink-extractor-analyze");
     const originalText = $btn.text();
