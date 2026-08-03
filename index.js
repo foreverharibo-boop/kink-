@@ -1189,6 +1189,23 @@ function buildPopup() {
     // MovingUI의 body transform 때문에 position:fixed가 깨지는 문제 회피 -> documentElement에 부착
     $(document.documentElement).append(html);
 
+    // ST 전역 CSS가 select/input 크기를 오버라이드하는 문제 방지 — 인라인 스타일로 강제
+    $(".kink-extractor-settings-row").css({
+        "display": "grid",
+        "grid-template-columns": "1fr 1fr 1fr",
+        "gap": "8px",
+        "align-items": "end",
+    });
+    $(".kink-extractor-setting-half select, .kink-extractor-setting-half input").each(function () {
+        this.style.setProperty("width", "100%", "important");
+        this.style.setProperty("min-width", "0", "important");
+        this.style.setProperty("max-width", "100%", "important");
+        this.style.setProperty("height", "38px", "important");
+        this.style.setProperty("box-sizing", "border-box", "important");
+        this.style.setProperty("font-size", "12.5px", "important");
+        this.style.setProperty("padding", "8px 6px", "important");
+    });
+
     $("#kink-extractor-char-search").on("input", function () {
         populateCharacterSelect();
         refreshPopupForSelectedCharacter();
@@ -1305,21 +1322,6 @@ function openPopup() {
     }
 
     $("#kink-extractor-overlay").addClass("open");
-
-    // 팝업이 document.documentElement에 붙어있고, 토스트는 body에 붙어있으면
-    // 서로 다른 스태킹 컨텍스트라 z-index 비교가 불가능함 → 토스트 컨테이너를 documentElement로 이동
-    function moveToastToRoot() {
-        const $t = $("#toast-container");
-        if ($t.length && $t.parent()[0] !== document.documentElement) {
-            $(document.documentElement).append($t);
-            $t[0].style.setProperty("z-index", "10000000", "important");
-        }
-    }
-    moveToastToRoot();
-    // 아직 없으면 생성될 때 이동
-    const toastObserver = new MutationObserver(moveToastToRoot);
-    toastObserver.observe(document.body, { childList: true });
-    setTimeout(() => toastObserver.disconnect(), 30000);
 }
 
 function closePopup() {
