@@ -436,13 +436,14 @@
 /* 새 설정 영역 */
 .kink-extractor-settings-row {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     margin: 10px 0 4px;
     align-items: flex-end;
 }
 
 .kink-extractor-setting-half {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
 }
@@ -450,14 +451,15 @@
 .kink-extractor-setting-half select,
 .kink-extractor-setting-half input {
     width: 100%;
-    padding: 8px 10px;
+    padding: 8px 6px;
     border-radius: 8px;
     border: 1px solid #e3e0da;
     background-color: #faf9f7 !important;
     color: #2b2b2e !important;
-    font-size: 13px;
+    font-size: 12.5px;
     height: 38px;
     box-sizing: border-box;
+    min-width: 0;
 }
 
 .kink-extractor-custom-prompt-wrap {
@@ -575,4 +577,9 @@
 .kink-translate-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+/* 토스트 알림이 팝업 오버레이(z-index: 999999) 뒤에 가려지는 문제 해결 */
+#toast-container {
+    z-index: 10000000 !important;
 }
