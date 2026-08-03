@@ -1187,23 +1187,15 @@ function buildPopup() {
     </div>`;
 
     // MovingUI의 body transform 때문에 position:fixed가 깨지는 문제 회피 -> documentElement에 부착
-    $(document.documentElement).append(html);
+    // body에 붙여야 토스트(body 안에 있음)와 같은 스태킹 컨텍스트에서 z-index 비교 가능
+    // MovingUI가 body에 transform을 걸어서 fixed가 깨지는 문제는 오버레이 자체에 transform 리셋으로 대응
+    $("body").append(html);
 
-    // ST 전역 CSS가 select/input 크기를 오버라이드하는 문제 방지 — 인라인 스타일로 강제
-    $(".kink-extractor-settings-row").css({
-        "display": "grid",
-        "grid-template-columns": "1fr 1fr 1fr",
-        "gap": "8px",
-        "align-items": "end",
-    });
+    // 3열 레이아웃 강제 — ST 전역 CSS가 select/input 크기를 오버라이드하는 문제 방지
+    const $row = $(".kink-extractor-settings-row");
+    $row[0].style.cssText = "display:grid !important; grid-template-columns:1fr 1fr 1fr !important; gap:8px; align-items:end; margin:10px 0 4px;";
     $(".kink-extractor-setting-half select, .kink-extractor-setting-half input").each(function () {
-        this.style.setProperty("width", "100%", "important");
-        this.style.setProperty("min-width", "0", "important");
-        this.style.setProperty("max-width", "100%", "important");
-        this.style.setProperty("height", "38px", "important");
-        this.style.setProperty("box-sizing", "border-box", "important");
-        this.style.setProperty("font-size", "12.5px", "important");
-        this.style.setProperty("padding", "8px 6px", "important");
+        this.style.cssText = "width:100% !important; min-width:0 !important; max-width:100% !important; height:38px !important; box-sizing:border-box !important; font-size:12.5px !important; padding:8px 6px !important; border-radius:8px; border:1px solid #e3e0da; background-color:#faf9f7; color:#2b2b2e;";
     });
 
     $("#kink-extractor-char-search").on("input", function () {

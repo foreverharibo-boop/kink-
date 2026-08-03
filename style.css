@@ -15,6 +15,9 @@
     justify-content: center !important;
     padding: 16px !important;
     box-sizing: border-box !important;
+    /* MovingUI가 body에 transform을 걸어서 fixed 좌표가 깨지는 문제 방지 */
+    transform: none !important;
+    -webkit-transform: none !important;
 }
 
 .kink-extractor-overlay.open {
