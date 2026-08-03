@@ -1305,6 +1305,24 @@ function openPopup() {
     }
 
     $("#kink-extractor-overlay").addClass("open");
+
+    // 토스트 알림이 팝업 뒤에 가려지지 않도록 z-index를 JS로 강제 설정
+    const $toast = $("#toast-container");
+    if ($toast.length) {
+        $toast[0].style.setProperty("z-index", "10000000", "important");
+    } else {
+        // 토스트 컨테이너가 아직 없을 수 있으니, 생성될 때를 대비해 MutationObserver로 감시
+        const observer = new MutationObserver(() => {
+            const $t = $("#toast-container");
+            if ($t.length) {
+                $t[0].style.setProperty("z-index", "10000000", "important");
+                observer.disconnect();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        // 10초 후 자동 정리
+        setTimeout(() => observer.disconnect(), 10000);
+    }
 }
 
 function closePopup() {
