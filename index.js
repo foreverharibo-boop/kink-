@@ -1139,7 +1139,18 @@ function buildPopup() {
                     </div>
                     <div class="kink-extractor-setting-half">
                         <label class="kink-extractor-label" for="kink-extractor-item-count">Items</label>
-                        <input id="kink-extractor-item-count" class="kink-extractor-chat-count" type="number" min="1" max="10" step="1">
+                        <select id="kink-extractor-item-count" class="kink-extractor-char-select">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                            <option value="5" selected>5</option>
+                            <option value="6">6</option>
+                            <option value="7">7</option>
+                            <option value="8">8</option>
+                            <option value="9">9</option>
+                            <option value="10">10</option>
+                        </select>
                     </div>
                 </div>
 
@@ -1191,10 +1202,13 @@ function buildPopup() {
     // MovingUI가 body에 transform을 걸어서 fixed가 깨지는 문제는 오버레이 자체에 transform 리셋으로 대응
     $("body").append(html);
 
-    // 3열 레이아웃 강제 — ST 전역 CSS가 select/input 크기를 오버라이드하는 문제 방지
+    // 3열 레이아웃 강제 — ST 전역 CSS가 select 크기를 오버라이드하는 문제 방지
     const $row = $(".kink-extractor-settings-row");
     $row[0].style.cssText = "display:grid !important; grid-template-columns:1fr 1fr 1fr !important; gap:8px; align-items:end; margin:10px 0 4px;";
-    $(".kink-extractor-setting-half select, .kink-extractor-setting-half input").each(function () {
+    $(".kink-extractor-setting-half").each(function () {
+        this.style.cssText = "min-width:0 !important; width:100% !important;";
+    });
+    $(".kink-extractor-setting-half select").each(function () {
         this.style.cssText = "width:100% !important; min-width:0 !important; max-width:100% !important; height:38px !important; box-sizing:border-box !important; font-size:12.5px !important; padding:8px 6px !important; border-radius:8px; border:1px solid #e3e0da; background-color:#faf9f7; color:#2b2b2e;";
     });
 
@@ -1236,9 +1250,9 @@ function buildPopup() {
         saveSettingsDebounced?.();
     });
 
-    $("#kink-extractor-item-count").on("change input", function () {
+    $("#kink-extractor-item-count").on("change", function () {
         const settings = ensureSettings();
-        settings.itemCount = Math.max(1, Math.min(10, Number($(this).val()) || 5));
+        settings.itemCount = Number($(this).val()) || 5;
         saveSettingsDebounced?.();
     });
 
