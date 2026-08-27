@@ -50,6 +50,7 @@ const defaultSettings = {
 };
 
 let extension_settings, getContext, generateRaw, saveSettingsDebounced, loadWorldInfo;
+let activeExtensionNames = [];
 let selectedCharIndex = null;
 let searchTerm = "";
 
@@ -59,6 +60,7 @@ async function loadModules() {
         const extMod = await import("../../../extensions.js");
         extension_settings = extMod.extension_settings ?? window.extension_settings;
         getContext = extMod.getContext ?? window.getContext ?? window.SillyTavern?.getContext;
+        activeExtensionNames = extMod.extensionNames ?? [];
     } catch (e) {
         extension_settings = window.extension_settings;
         getContext = window.getContext ?? window.SillyTavern?.getContext;
@@ -118,6 +120,33 @@ function getCharacterKeyByIndex(idx) {
 // CardInject(foreverharibo-boop/cardinject)의 extension_settings 구조에 직접 써서
 // "Kink" 카테고리에 항목을 추가함. 캐릭터 키 포맷을 CardInject 쪽과 반드시 맞춰야 함(idx_ 접두사).
 const CARDINJECT_KEY = "cardinject";
+
+function isCardInjectActive() {
+    const contextNames = getContext?.()?.extensionNames;
+    const windowNames = window.extensionNames;
+    const names = [activeExtensionNames, contextNames, windowNames]
+        .filter(Array.isArray)
+        .flat();
+    return names.some((entry) => {
+        const name = String(entry?.name ?? entry?.id ?? entry ?? "").replace(/\\/g, "/");
+        return /(^|\/)cardinject(?:-main)?(?:\/|$)/i.test(name);
+    });
+}
+
+function addKinkToAvailableInjector(idx, kinkText) {
+    // 기존 CardInject 연결이 최우선이다. 설정 데이터가 남아 있는지가 아니라
+    // 현재 확장 로더에 활성화되어 있는지를 기준으로 분기한다.
+    if (isCardInjectActive()) {
+        return { target: "CardInject", result: addKinkToCardInject(idx, kinkText) };
+    }
+
+    // CardInject가 꺼진 경우에만 CharSheet Injector의 공개 연결 API로 폴백한다.
+    const bridge = window.CharSheetInjectorBridge;
+    if (typeof bridge?.addKink === "function") {
+        return { target: "CharSheet Injector", result: bridge.addKink(idx, kinkText) };
+    }
+    return { target: "CharSheet Injector", result: "unavailable" };
+}
 
 function getCardInjectCharKey(idx) {
     const chars = getAllCharacters();
@@ -894,15 +923,15 @@ function injectKinkToCardInject(idx, $btn, mode) {
     const item = entry.items[idx];
     const kinkText = (mode === "translated" && item.translatedKink) ? item.translatedKink : item.kink;
     const originalText = $btn.text();
-    const result = addKinkToCardInject(selectedCharIndex, kinkText);
+    const { target, result } = addKinkToAvailableInjector(selectedCharIndex, kinkText);
 
     if (result === "added") {
-        $btn.text("Added!");
+        $btn.text(`Added to ${target}!`);
     } else if (result === "duplicate") {
         $btn.text("Already there");
     } else {
         $btn.text("Failed");
-        toastr?.error?.("Couldn't reach CardInject's settings.") ?? alert("Couldn't reach CardInject's settings.");
+        toastr?.error?.(`Couldn't reach ${target}. Make sure it is enabled.`) ?? alert(`Couldn't reach ${target}. Make sure it is enabled.`);
     }
     setTimeout(() => $btn.text(originalText), 1400);
 }
