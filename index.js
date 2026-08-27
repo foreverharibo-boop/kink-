@@ -50,7 +50,6 @@ const defaultSettings = {
 };
 
 let extension_settings, getContext, generateRaw, saveSettingsDebounced, loadWorldInfo;
-let activeExtensionNames = [];
 let selectedCharIndex = null;
 let searchTerm = "";
 
@@ -60,7 +59,6 @@ async function loadModules() {
         const extMod = await import("../../../extensions.js");
         extension_settings = extMod.extension_settings ?? window.extension_settings;
         getContext = extMod.getContext ?? window.getContext ?? window.SillyTavern?.getContext;
-        activeExtensionNames = extMod.extensionNames ?? [];
     } catch (e) {
         extension_settings = window.extension_settings;
         getContext = window.getContext ?? window.SillyTavern?.getContext;
@@ -122,14 +120,11 @@ function getCharacterKeyByIndex(idx) {
 const CARDINJECT_KEY = "cardinject";
 
 function isCardInjectActive() {
-    const contextNames = getContext?.()?.extensionNames;
-    const windowNames = window.extensionNames;
-    const names = [activeExtensionNames, contextNames, windowNames]
-        .filter(Array.isArray)
-        .flat();
-    return names.some((entry) => {
-        const name = String(entry?.name ?? entry?.id ?? entry ?? "").replace(/\\/g, "/");
-        return /(^|\/)cardinject(?:-main)?(?:\/|$)/i.test(name);
+    // extensionNames에는 설치됐지만 비활성화된 확장도 남을 수 있다.
+    // 활성 확장만 실제 JS 파일이 문서에 로드되므로 script src를 기준으로 판별한다.
+    return [...document.scripts].some((script) => {
+        const src = String(script.src || "").replace(/\\/g, "/");
+        return /\/cardinject(?:-main)?\/[^/]+\.js(?:[?#].*)?$/i.test(src);
     });
 }
 
