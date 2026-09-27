@@ -564,7 +564,8 @@
     color: #6b6862 !important;
 }
 
-.kink-translate-btn {
+.kink-translate-btn,
+.kink-google-translate-btn {
     margin-top: 0;
     background-color: #ffffff !important;
     border: 1px solid #e3e0da !important;
@@ -575,12 +576,13 @@
     cursor: pointer;
 }
 
-.kink-translate-btn:hover {
+.kink-translate-btn:hover,
+.kink-google-translate-btn:hover {
     background-color: #f0eee9 !important;
 }
 
-.kink-translate-btn:disabled {
+.kink-translate-btn:disabled,
+.kink-google-translate-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }
-

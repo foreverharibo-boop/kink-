@@ -644,10 +644,15 @@ function renderResult(items) {
         html += `<div class="section-title">${escapeHtml(SECTION_TITLES[sectionKey])}</div>`;
         for (const it of visibleGroup) {
             const hasTranslation = it.translatedKink && it.translatedReason;
+            const translationLabel = it.translationProvider === "google"
+                ? "Google translated"
+                : it.translationProvider === "profile"
+                    ? "AI translated"
+                    : "translated";
             const translatedBlock = hasTranslation
                 ? `<div class="kink-translated-block">
-                    <p class="prose-line"><span class="field-label">Kink (translated):</span> ${escapeHtml(it.translatedKink)}</p>
-                    <p class="prose-line"><span class="field-label">Reason (translated):</span> ${escapeHtml(it.translatedReason)}</p>
+                    <p class="prose-line"><span class="field-label">Kink (${translationLabel}):</span> ${escapeHtml(it.translatedKink)}</p>
+                    <p class="prose-line"><span class="field-label">Reason (${translationLabel}):</span> ${escapeHtml(it.translatedReason)}</p>
                    </div>`
                 : "";
 
@@ -660,7 +665,8 @@ function renderResult(items) {
                 <div class="kink-item-actions">
                     <button class="kink-reroll-btn" data-idx="${it.idx}" title="Reroll this entry">🔁</button>
                     <button class="kink-copy-btn" data-idx="${it.idx}" title="Copy just the Kink line">📋</button>
-                    <button class="kink-translate-btn" data-idx="${it.idx}" title="Translate this entry">🌐</button>
+                    <button class="kink-translate-btn" data-idx="${it.idx}" title="AI translate with the selected connection profile">🌐</button>
+                    <button class="kink-google-translate-btn" data-idx="${it.idx}" title="Translate with Google only">Google 번역</button>
                     <button class="kink-inject-btn" data-idx="${it.idx}" data-mode="original" title="Insert original to CardInject">➕ 원문삽입</button>
                     ${hasTranslation ? `<button class="kink-inject-btn" data-idx="${it.idx}" data-mode="translated" title="Insert translated to CardInject">➕ 번역삽입</button>` : ""}
                     <button class="kink-delete-btn" data-idx="${it.idx}" title="Delete this entry">🗑</button>
@@ -689,6 +695,11 @@ function renderResult(items) {
     $out.find(".kink-translate-btn").on("click", function () {
         const idx = Number($(this).data("idx"));
         translateItem(idx, $(this));
+    });
+
+    $out.find(".kink-google-translate-btn").on("click", function () {
+        const idx = Number($(this).data("idx"));
+        translateItemWithGoogle(idx, $(this));
     });
 
     $out.find(".kink-inject-btn").on("click", function () {
@@ -897,6 +908,7 @@ Reason: ${item.reason}`;
         if (kinkMatch && reasonMatch) {
             item.translatedKink = kinkMatch[1].trim();
             item.translatedReason = reasonMatch[1].trim();
+            item.translationProvider = "profile";
             saveSettingsDebounced?.();
             renderResult(entry.items);
         } else {
@@ -906,6 +918,54 @@ Reason: ${item.reason}`;
     } catch (e) {
         console.error(`[${EXT_ID}] 번역 실패`, e);
         toastr?.error?.("Translation failed.") ?? alert("Translation failed.");
+        $btn.prop("disabled", false).text(originalText);
+    }
+}
+
+async function getGoogleTranslateFunction() {
+    if (typeof globalThis.translate === "function") return globalThis.translate;
+
+    try {
+        const module = await import("../../translate/index.js");
+        if (typeof module.translate === "function") return module.translate;
+    } catch (e) {
+        console.warn(`[${EXT_ID}] SillyTavern 번역 모듈을 불러오지 못했습니다.`, e);
+    }
+
+    throw new Error("SillyTavern Google 번역 기능을 찾을 수 없습니다.");
+}
+
+// Google 번역은 번역에만 사용한다. 킨크 추출/추가 제안/리롤은 항상 generateWithSelectedProfile() 경로를 사용한다.
+async function translateItemWithGoogle(idx, $btn) {
+    if (selectedCharIndex === null) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    if (!entry || !entry.items[idx]) return;
+
+    const item = entry.items[idx];
+    const currentLang = ensureSettings().outputLanguage || "English";
+    const targetLanguageCode = currentLang === "Korean" ? "en" : "ko";
+    const originalText = $btn.text();
+    $btn.prop("disabled", true).text("번역 중...");
+
+    try {
+        const translate = await getGoogleTranslateFunction();
+        const translatedKink = await translate(item.kink, targetLanguageCode, "google");
+        const translatedReason = await translate(item.reason, targetLanguageCode, "google");
+
+        if (typeof translatedKink !== "string" || !translatedKink.trim()
+            || typeof translatedReason !== "string" || !translatedReason.trim()) {
+            throw new Error("Google 번역 결과가 비어 있습니다.");
+        }
+
+        item.translatedKink = translatedKink.trim();
+        item.translatedReason = translatedReason.trim();
+        item.translationProvider = "google";
+        saveSettingsDebounced?.();
+        renderResult(entry.items);
+    } catch (e) {
+        console.error(`[${EXT_ID}] Google 번역 실패`, e);
+        toastr?.error?.("Google 번역에 실패했습니다. SillyTavern 번역 설정을 확인해주세요.")
+            ?? alert("Google 번역에 실패했습니다. SillyTavern 번역 설정을 확인해주세요.");
         $btn.prop("disabled", false).text(originalText);
     }
 }
