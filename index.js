@@ -980,6 +980,37 @@ async function translateItemWithGoogle(idx, $btn) {
 // ---------- 실제 캐릭터 카드 저장 (추출/Injector 주입과 독립) ----------
 const sheetSaves = new Set();
 const SHEET_FIELDS = { description: "#description_textarea", personality: "#personality_textarea", scenario: "#scenario_pole" };
+const sheetEditorDrafts = new Map();
+
+// Textareas may retain another card or stale text even when that editor is closed.
+// Only actual user input in the form belonging to this avatar counts as a draft.
+function normalizeSheetEditorText(value) {
+    return String(value ?? "").replace(/\r\n?/g, "\n");
+}
+
+function trackSheetEditorInput() {
+    const selectors = Object.values(SHEET_FIELDS).join(", ");
+    $(document).off("input.kinkSheetDraft", selectors).on("input.kinkSheetDraft", selectors, function (event) {
+        if (event.originalEvent?.isTrusted !== true) return;
+        const avatar = $("#avatar_url_pole").val();
+        const field = Object.keys(SHEET_FIELDS).find(key => SHEET_FIELDS[key] === `#${this.id}`);
+        if (!avatar || !field) return;
+        sheetEditorDrafts.set(`${avatar}:${field}`, normalizeSheetEditorText($(this).val()));
+    });
+}
+
+function hasUnsavedSheetDraft(avatar, field, serverText) {
+    if ($("#avatar_url_pole").val() !== avatar) return false;
+    const key = `${avatar}:${field}`;
+    if (!sheetEditorDrafts.has(key)) return false;
+    const current = normalizeSheetEditorText($(SHEET_FIELDS[field]).val());
+    if (current !== sheetEditorDrafts.get(key) || current === normalizeSheetEditorText(serverText)) {
+        // The form was reloaded, or the user's edit has already been saved.
+        sheetEditorDrafts.delete(key);
+        return false;
+    }
+    return true;
+}
 
 function sheetField(card, field) {
     return String(card.data?.[field] ?? card[field] ?? "");
@@ -1119,10 +1150,10 @@ function syncSheetField(avatar, plan) {
             card.json_data = JSON.stringify(json);
         } catch (error) { console.warn(`[${EXT_ID}] json_data 동기화 실패`, error); }
     }
-    if (context.characters?.[context.characterId]?.avatar === avatar) {
+    if ($("#avatar_url_pole").val() === avatar) {
         const $field = $(SHEET_FIELDS[plan.field]);
         // Do not clobber edits made while the network request was pending.
-        if ($field.val() === plan.before) $field.val(plan.value);
+        if (!hasUnsavedSheetDraft(avatar, plan.field, plan.before)) $field.val(plan.value);
         if (card.json_data) $("#character_json_data").val(card.json_data);
     }
 }
@@ -1154,12 +1185,8 @@ async function addItemToCharacterSheet(idx, $btn, mode) {
             window.toastr?.info("이미 캐릭터 시트에 있는 문장이야.");
             return;
         }
-        const ctx = getContext();
-        if (ctx.characters?.[ctx.characterId]?.avatar === avatar) {
-            const $field = $(SHEET_FIELDS[plan.field]);
-            if ($field.length && $field.val() !== plan.before) {
-                throw new Error("캐릭터 편집창에 다른 변경 내용이 있어. 먼저 저장한 뒤 다시 눌러줘.");
-            }
+        if (hasUnsavedSheetDraft(avatar, plan.field, plan.before)) {
+            throw new Error("직접 수정 중인 캐릭터 시트 내용이 아직 저장되지 않았어. 편집 내용을 저장한 뒤 다시 눌러줘.");
         }
         await requestCharacter("edit-attribute", {
             avatar_url: avatar, ch_name: fresh.name, field: plan.field, value: plan.value,
@@ -1705,6 +1732,7 @@ jQuery(async () => {
     if (!ok) return;
 
     ensureSettings();
+    trackSheetEditorInput();
     addWandButton();
     buildExtensionsTabPanel();
 });

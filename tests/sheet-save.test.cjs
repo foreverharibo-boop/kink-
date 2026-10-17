@@ -135,3 +135,76 @@ test('duplicate does not send a write request', async () => {
     assert.equal(r.calls.length, 1);
     assert.equal(r.notices[0][0], 'info');
 });
+
+function installEditor(r, { avatar = 'a.png', value = '', trustedInput = false } = {}) {
+    const values = { '#avatar_url_pole': avatar, '#description_textarea': value };
+    let inputHandler;
+    r.ctx.document = {};
+    r.ctx.$ = selector => ({
+        length: Object.hasOwn(values, selector) ? 1 : 0,
+        val(newValue) { if (newValue !== undefined) values[selector] = newValue; return values[selector]; },
+        prop() { return this; },
+        off() { return this; },
+        on(_event, _selector, callback) { inputHandler = callback; return this; },
+    });
+    r.ctx.trackSheetEditorInput();
+    if (trustedInput) {
+        const element = { id: 'description_textarea' };
+        const jq = r.ctx.$;
+        r.ctx.$ = selector => jq(selector === element ? '#description_textarea' : selector);
+        inputHandler.call(element, { originalEvent: { isTrusted: true } });
+    }
+    r.ctx.fakeContext.characterId = 0;
+    return values;
+}
+
+test('stale hidden textarea no longer blocks saving and is refreshed', async () => {
+    const r = saveRuntime();
+    const values = installEditor(r, { value: 'Stale form contents' });
+    await r.ctx.addItemToCharacterSheet(0, r.button, 'original');
+    assert.equal(r.calls.length, 2);
+    assert.equal(r.notices[0][0], 'success');
+    assert.ok(values['#description_textarea'].includes('New preference.'));
+});
+
+test('another character form is neither checked nor overwritten', async () => {
+    const r = saveRuntime();
+    const values = installEditor(r, { avatar: 'b.png', value: 'B draft', trustedInput: true });
+    await r.ctx.addItemToCharacterSheet(0, r.button, 'original');
+    assert.equal(r.calls.length, 2);
+    assert.equal(values['#description_textarea'], 'B draft');
+});
+
+test('actual unsaved user input is preserved and blocks write', async () => {
+    const r = saveRuntime();
+    const values = installEditor(r, { value: 'My unsaved draft', trustedInput: true });
+    await r.ctx.addItemToCharacterSheet(0, r.button, 'original');
+    assert.equal(r.calls.length, 1);
+    assert.equal(values['#description_textarea'], 'My unsaved draft');
+    assert.equal(r.cards[0].description, 'Original');
+    assert.equal(r.notices[0][0], 'error');
+});
+
+test('saved input and CRLF normalization do not count as unsaved changes', async () => {
+    const r = saveRuntime();
+    installEditor(r, { value: 'Original\nsecond line', trustedInput: true });
+    assert.equal(r.ctx.hasUnsavedSheetDraft('a.png', 'description', 'Original\r\nsecond line'), false);
+    const s = saveRuntime();
+    installEditor(s, { value: 'Original', trustedInput: true });
+    await s.ctx.addItemToCharacterSheet(0, s.button, 'original');
+    assert.equal(s.calls.length, 2);
+});
+
+test('draft typed during save is not overwritten by response synchronization', async () => {
+    const r = saveRuntime();
+    installEditor(r, { value: 'Original' });
+    const originalFetch = r.ctx.fetch;
+    let values;
+    r.ctx.fetch = async (url, options) => {
+        if (url.endsWith('/edit-attribute')) values = installEditor(r, { value: 'New in-flight draft', trustedInput: true });
+        return originalFetch(url, options);
+    };
+    await r.ctx.addItemToCharacterSheet(0, r.button, 'original');
+    assert.equal(values['#description_textarea'], 'New in-flight draft');
+    assert.ok(r.cards[0].description.includes('New preference.'));
+});
