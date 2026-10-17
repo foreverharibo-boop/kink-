@@ -39,9 +39,20 @@ test('Korean bold titles and field labels', () => {
 test('existing Kink field is extended without duplicating its label', () => {
     const text = '## Sexuality\n- Kink: Original.\n- Limits: Unchanged\n## History\nKeep';
     const first = plan(text);
-    assert.ok(first.value.includes('- Kink: Original.; New preference.'));
+    assert.ok(first.value.includes('- Kink: Original.\n  New preference.'));
     assert.equal((first.value.match(/Kink:/g) || []).length, 1);
     assert.equal(plan(first.value).duplicate, true);
+});
+
+test('successive additions remain on separate lines in insertion order', () => {
+    for (const nl of ['\n', '\r\n']) {
+        let text = `## Sexuality${nl}- Kink: First.${nl}- Limits: Keep${nl}## History${nl}Keep history`;
+        text = plan(text, 'Second: a preference.').value;
+        text = plan(text, 'Third preference.').value;
+        assert.ok(text.includes(`- Kink: First.${nl}  Second: a preference.${nl}  Third preference.${nl}- Limits: Keep`));
+        assert.ok(text.endsWith(`## History${nl}Keep history`));
+        assert.equal((text.match(/Kink:/g) || []).length, 1);
+    }
 });
 
 test('existing Kink heading and nested XML Kink are reused', () => {

@@ -1049,8 +1049,10 @@ function sheetSections(text) {
             if (match || bare) {
                 const title = heading ? heading[2] : match ? match[1] : bare;
                 const inline = !heading && !bracket && (bold || label)?.[2];
+                const indent = line.match(/^\s*/)[0];
                 nodes.push({ start: offset, bodyStart: offset + raw.length, lineEnd: offset + line.length,
-                    level: heading ? heading[1].length : /^\s*[-*+]\s/.test(line) ? 8 : 7,
+                    level: heading ? heading[1].length : 7 + indent.length + (/^\s*[-*+]\s/.test(line) ? 1 : 0),
+                    indent,
                     title, kind: sheetTitleKind(title), inline: Boolean(inline), end: text.length });
             }
         }
@@ -1114,13 +1116,13 @@ function planSheetKink(card, kinkText) {
     if (!node) {
         value = text + (text ? (text.endsWith(nl + nl) ? "" : text.endsWith(nl) ? nl : nl + nl) : "")
             + `## Sexuality & Kink${nl}- Kink: ${kink}${nl}`;
-    } else if (node.kind === "kink" && node.inline) {
-        // Keep the existing label and contents, append to its value.
-        value = text.slice(0, node.lineEnd) + `; ${kink}` + text.slice(node.lineEnd);
     } else {
         let at = node.end;
         while (at > node.bodyStart && /\s/.test(text[at - 1])) at--;
-        const addition = node.kind === "kink" ? `- ${kink}` : `- Kink: ${kink}`;
+        // Append after all existing entries, with exactly one line break before the new one.
+        const addition = node.kind === "kink"
+            ? node.inline ? `${node.indent || ""}  ${kink}` : `- ${kink}`
+            : `- Kink: ${kink}`;
         value = insertSheetText(text, at, addition, nl);
     }
     return { field, before: text, value, category: node?.title || "Sexuality & Kink" };
