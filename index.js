@@ -49,7 +49,7 @@ const defaultSettings = {
     analyzeSources: { sheet: true, chat: true, lorebook: true, inferred: true },
 };
 
-let extension_settings, getContext, generateRaw, saveSettingsDebounced, loadWorldInfo;
+let extension_settings, getContext, generateRaw, saveSettingsDebounced, loadWorldInfo, getRequestHeaders;
 let selectedCharIndex = null;
 let searchTerm = "";
 
@@ -67,9 +67,11 @@ async function loadModules() {
     try {
         const scriptMod = await import("../../../../script.js");
         generateRaw = scriptMod.generateRaw ?? window.generateRaw;
+        getRequestHeaders = scriptMod.getRequestHeaders ?? window.getRequestHeaders;
         saveSettingsDebounced = scriptMod.saveSettingsDebounced ?? window.saveSettingsDebounced;
     } catch (e) {
         generateRaw = window.generateRaw;
+        getRequestHeaders = window.getRequestHeaders;
         saveSettingsDebounced = window.saveSettingsDebounced;
     }
 
@@ -669,6 +671,8 @@ function renderResult(items) {
                     <button class="kink-google-translate-btn" data-idx="${it.idx}" title="Translate with Google only">Google 번역</button>
                     <button class="kink-inject-btn" data-idx="${it.idx}" data-mode="original" title="Insert original to CardInject">➕ 원문삽입</button>
                     ${hasTranslation ? `<button class="kink-inject-btn" data-idx="${it.idx}" data-mode="translated" title="Insert translated to CardInject">➕ 번역삽입</button>` : ""}
+                    <button class="kink-sheet-btn" data-idx="${it.idx}" data-mode="original" title="캐릭터 시트에 Kink 문장 저장">📄 시트에 원문 추가</button>
+                    ${hasTranslation ? `<button class="kink-sheet-btn" data-idx="${it.idx}" data-mode="translated" title="캐릭터 시트에 번역된 Kink 문장 저장">📄 시트에 번역 추가</button>` : ""}
                     <button class="kink-delete-btn" data-idx="${it.idx}" title="Delete this entry">🗑</button>
                 </div>
             </div>`;
@@ -712,6 +716,9 @@ function renderResult(items) {
         const idx = Number($(this).data("idx"));
         deleteItem(idx);
     });
+    $out.find(".kink-sheet-btn").on("click", function () {
+        addItemToCharacterSheet(Number($(this).data("idx")), $(this), $(this).data("mode"));
+    }).prop("disabled", sheetSaves.size > 0);
 }
 
 // ---------- 액션 ----------
@@ -967,6 +974,205 @@ async function translateItemWithGoogle(idx, $btn) {
         toastr?.error?.("Google 번역에 실패했습니다. SillyTavern 번역 설정을 확인해주세요.")
             ?? alert("Google 번역에 실패했습니다. SillyTavern 번역 설정을 확인해주세요.");
         $btn.prop("disabled", false).text(originalText);
+    }
+}
+
+// ---------- 실제 캐릭터 카드 저장 (추출/Injector 주입과 독립) ----------
+const sheetSaves = new Set();
+const SHEET_FIELDS = { description: "#description_textarea", personality: "#personality_textarea", scenario: "#scenario_pole" };
+
+function sheetField(card, field) {
+    return String(card.data?.[field] ?? card[field] ?? "");
+}
+
+function sheetTitleKind(title) {
+    const clean = title.toLowerCase().replace(/[_*#\[\]<>:：()\-]/g, " ").replace(/\s+/g, " ").trim();
+    if (/^(?:kinks?|fetishes?|fetish|킨크|페티시|페티쉬)(?:\s+(?:preferences|설정|취향|목록))?$/.test(clean)) return "kink";
+    if (/\b(?:sexual(?:ity)?|sex|nsfw|erotic|intimacy|kinks?|fetish(?:es)?)\b/.test(clean)
+        || /성적|성생활|성행위|섹슈얼|섹스|성애|성욕|성향.*취향|19금|킨크|페티[시쉬]/.test(clean)) return "sexual";
+    return null;
+}
+
+// 제목/필드 경계만 사용한다. 본문에 sexual이라는 단어가 있다는 이유로 위치를 고르지 않는다.
+function sheetSections(text) {
+    const nodes = [];
+    let offset = 0;
+    let fence = null;
+    for (const raw of text.split(/(?<=\n)/)) {
+        const line = raw.replace(/\r?\n$/, "");
+        const f = line.trim().match(/^(`{3,}|~{3,})/);
+        if (f) {
+            if (!fence) fence = f[1][0];
+            else if (f[1][0] === fence) fence = null;
+            offset += raw.length;
+            continue;
+        }
+        if (!fence) {
+            const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
+            const bold = line.match(/^\s*(?:[-*+]\s+)?\*\*([^*\n]+?)\*\*\s*[:：]?\s*(.*)$/);
+            const bracket = line.match(/^\s*\[([^\]\n]+)\]\s*$/);
+            const label = line.match(/^\s*(?:[-*+]\s+)?([^:：\n]{1,80})[:：]\s*(.*)$/);
+            const bare = /^(?:sexual(?:ity|\s+(?:preferences|behavior|behaviour|traits|profile|characteristics))?|sex|nsfw|kinks?|fetishes|intimacy|성적\s*(?:취향|성향|특징|설정|기호)|성생활|섹슈얼|킨크|페티시)\s*$/i.test(line.trim())
+                ? line.trim() : null;
+            const match = heading || bold || bracket || label;
+            if (match || bare) {
+                const title = heading ? heading[2] : match ? match[1] : bare;
+                const inline = !heading && !bracket && (bold || label)?.[2];
+                nodes.push({ start: offset, bodyStart: offset + raw.length, lineEnd: offset + line.length,
+                    level: heading ? heading[1].length : /^\s*[-*+]\s/.test(line) ? 8 : 7,
+                    title, kind: sheetTitleKind(title), inline: Boolean(inline), end: text.length });
+            }
+        }
+        offset += raw.length;
+    }
+    for (let i = 0; i < nodes.length; i++) {
+        const next = nodes.slice(i + 1).find(n => n.level <= nodes[i].level);
+        if (next) nodes[i].end = next.start;
+        // Never cross a closing XML-style wrapper around a Markdown section.
+        const close = /<\/[\w:-]+\s*>/.exec(text.slice(nodes[i].bodyStart, nodes[i].end));
+        if (close) nodes[i].end = nodes[i].bodyStart + close.index;
+    }
+    // XML-style sections, including inline <sexuality>...</sexuality> cards.
+    const tags = /<([a-zA-Z][\w:-]*)\b[^>]*>/g;
+    for (const match of text.matchAll(tags)) {
+        const kind = sheetTitleKind(match[1]);
+        if (!kind) continue;
+        const end = text.indexOf(`</${match[1]}>`, match.index + match[0].length);
+        if (end < 0) continue;
+        nodes.push({ start: match.index, bodyStart: match.index + match[0].length, end,
+            level: 0, title: match[1], kind, xml: true });
+    }
+    return nodes.sort((a, b) => a.start - b.start);
+}
+
+function insertSheetText(text, at, addition, newline) {
+    const before = text.slice(0, at);
+    const after = text.slice(at);
+    return before + (before && !before.endsWith("\n") ? newline : "") + addition
+        + (/^\r?\n/.test(after) ? "" : newline) + after;
+}
+
+// Pure edit plan: original content stays byte-for-byte intact; only new text is inserted.
+function planSheetKink(card, kinkText) {
+    const kink = String(kinkText || "").replace(/\s+/g, " ").trim();
+    if (!kink) throw new Error("추가할 Kink 문장이 비어 있어.");
+    const fields = Object.keys(SHEET_FIELDS).map(field => {
+        const text = sheetField(card, field);
+        return { field, text, nodes: sheetSections(text) };
+    });
+    const normalized = value => value.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+    if (fields.some(f => normalized(f.text).includes(normalized(kink)))) return { duplicate: true };
+    // Prefer a Kink subsection inside an existing sexual category, then a standalone Kink section.
+    let chosen;
+    for (const f of fields) {
+        const sexual = f.nodes.find(n => n.kind === "sexual");
+        if (sexual) {
+            chosen = { ...f, node: f.nodes.find(n => n.kind === "kink" && n.start > sexual.start && n.end <= sexual.end) || sexual };
+            break;
+        }
+    }
+    if (!chosen) {
+        for (const f of fields) {
+            const node = f.nodes.find(n => n.kind === "kink");
+            if (node) { chosen = { ...f, node }; break; }
+        }
+    }
+    const { field, text, node } = chosen || fields[0];
+    const nl = text.includes("\r\n") ? "\r\n" : "\n";
+    let value;
+    if (!node) {
+        value = text + (text ? (text.endsWith(nl + nl) ? "" : text.endsWith(nl) ? nl : nl + nl) : "")
+            + `## Sexuality & Kink${nl}- Kink: ${kink}${nl}`;
+    } else if (node.kind === "kink" && node.inline) {
+        // Keep the existing label and contents, append to its value.
+        value = text.slice(0, node.lineEnd) + `; ${kink}` + text.slice(node.lineEnd);
+    } else {
+        let at = node.end;
+        while (at > node.bodyStart && /\s/.test(text[at - 1])) at--;
+        const addition = node.kind === "kink" ? `- ${kink}` : `- Kink: ${kink}`;
+        value = insertSheetText(text, at, addition, nl);
+    }
+    return { field, before: text, value, category: node?.title || "Sexuality & Kink" };
+}
+
+async function requestCharacter(path, body) {
+    const headers = getRequestHeaders || getContext()?.getRequestHeaders;
+    if (typeof headers !== "function") throw new Error("캐릭터 저장 모듈을 불러오지 못했어. 새로고침 후 다시 시도해줘.");
+    const response = await fetch(`/api/characters/${path}`, {
+        method: "POST", headers: headers(), body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`캐릭터 시트 ${path === "get" ? "읽기" : "저장"} 실패 (HTTP ${response.status})`);
+    return path === "get" ? response.json() : response;
+}
+
+function syncSheetField(avatar, plan) {
+    const context = getContext();
+    const card = (context.characters || []).find(c => c.avatar === avatar);
+    if (!card) return;
+    card[plan.field] = plan.value;
+    if (card.data) card.data[plan.field] = plan.value;
+    if (card.json_data) {
+        try {
+            const json = JSON.parse(card.json_data);
+            json[plan.field] = plan.value;
+            if (json.data) json.data[plan.field] = plan.value;
+            card.json_data = JSON.stringify(json);
+        } catch (error) { console.warn(`[${EXT_ID}] json_data 동기화 실패`, error); }
+    }
+    if (context.characters?.[context.characterId]?.avatar === avatar) {
+        const $field = $(SHEET_FIELDS[plan.field]);
+        // Do not clobber edits made while the network request was pending.
+        if ($field.val() === plan.before) $field.val(plan.value);
+        if (card.json_data) $("#character_json_data").val(card.json_data);
+    }
+}
+
+async function addItemToCharacterSheet(idx, $btn, mode) {
+    if (selectedCharIndex === null || sheetSaves.size) return;
+    const entry = getEntryByIndex(selectedCharIndex);
+    const card = getAllCharacters()[selectedCharIndex];
+    const item = entry?.items[idx];
+    if (!item || !card?.avatar) return;
+    if (!entry.isAdultConfirmed) {
+        window.toastr?.warning("먼저 성인 캐릭터 확인에 체크해줘.");
+        return;
+    }
+    // Capture the stable avatar and text before any await or character selection change.
+    const avatar = card.avatar;
+    const kink = mode === "translated" ? item.translatedKink : item.kink;
+    const originalLabel = $btn.text();
+    sheetSaves.add(avatar);
+    $(".kink-sheet-btn").prop("disabled", true);
+    $btn.text("저장 중…");
+    try {
+        const fresh = await requestCharacter("get", { avatar_url: avatar });
+        if (!fresh || typeof fresh !== "object" || !fresh.name || (!fresh.data && typeof fresh.description !== "string")) {
+            throw new Error("캐릭터 시트를 읽지 못했어. 다시 시도해줘.");
+        }
+        const plan = planSheetKink(fresh, kink);
+        if (plan.duplicate) {
+            window.toastr?.info("이미 캐릭터 시트에 있는 문장이야.");
+            return;
+        }
+        const ctx = getContext();
+        if (ctx.characters?.[ctx.characterId]?.avatar === avatar) {
+            const $field = $(SHEET_FIELDS[plan.field]);
+            if ($field.length && $field.val() !== plan.before) {
+                throw new Error("캐릭터 편집창에 다른 변경 내용이 있어. 먼저 저장한 뒤 다시 눌러줘.");
+            }
+        }
+        await requestCharacter("edit-attribute", {
+            avatar_url: avatar, ch_name: fresh.name, field: plan.field, value: plan.value,
+        });
+        syncSheetField(avatar, plan);
+        window.toastr?.success(`${fresh.name} 시트의 ${plan.category}에 추가했어.`);
+    } catch (error) {
+        console.error(`[${EXT_ID}] 캐릭터 시트 추가 실패`, error);
+        window.toastr?.error(error.message || "캐릭터 시트 저장에 실패했어.");
+    } finally {
+        sheetSaves.delete(avatar);
+        $(".kink-sheet-btn").prop("disabled", sheetSaves.size > 0);
+        $btn.text(originalLabel);
     }
 }
 
@@ -1502,3 +1708,4 @@ jQuery(async () => {
     addWandButton();
     buildExtensionsTabPanel();
 });
+
